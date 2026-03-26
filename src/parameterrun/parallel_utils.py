@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import sys
 from datetime import datetime
 from itertools import product
@@ -197,18 +198,62 @@ def _get_iteration(index, param_names, param_values):
     return dic_temp
 
 
+def _flatten_param_names(param_names: List[List[str]]) -> List[str]:
+    return [name for group in param_names for name in group]
+
+
+def _validate_function_arguments(fun: Callable[..., Any], param_names: List[List[str]], fun_kwargs: dict) -> None:
+    signature = inspect.signature(fun)
+    parameters = signature.parameters
+    accepts_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+    sweep_names = _flatten_param_names(param_names)
+
+    duplicated = sorted({name for name in sweep_names if sweep_names.count(name) > 1})
+    if duplicated:
+        raise ValueError(f'Duplicate parameter names are not allowed: {duplicated}')
+
+    overlapping_kwargs = sorted(set(sweep_names).intersection(fun_kwargs))
+    if overlapping_kwargs:
+        raise ValueError(f'Keyword arguments conflict with swept parameters: {overlapping_kwargs}. '
+                         f'Remove them from kwargs or param_names.')
+
+    if accepts_var_kwargs:
+        return
+
+    known_names = set(parameters)
+    unknown_sweep = sorted(name for name in sweep_names if name not in known_names)
+    if unknown_sweep:
+        raise ValueError(f'Unknown swept parameter names for function {fun.__name__}: {unknown_sweep}')
+
+    unknown_kwargs = sorted(name for name in fun_kwargs if name not in known_names)
+    if unknown_kwargs:
+        raise ValueError(f'Unknown keyword arguments for function {fun.__name__}: {unknown_kwargs}')
+
+
 def _format_input(param_names: Union[str, list], param_values: list) -> Tuple[List[List[str]], List[List[List]]]:
     # Check the depth of the parameters
 
-    if type(param_names) is str:
-        depth = 1
-    elif type(param_names[0]) is str:
-        depth = 2
-        if type(param_values) is not list:
+    if isinstance(param_names, str):
+        if not param_names:
+            raise ValueError('Parameter names must be non-empty strings')
+        if not isinstance(param_values, list):
             raise ValueError('The parameters values must be a list of values')
-    elif type(param_names[0][0]) is str:
+        depth = 1
+    elif isinstance(param_names, list) and len(param_names) > 0 and all(isinstance(name, str) for name in param_names):
+        if any(not name for name in param_names):
+            raise ValueError('Parameter names must be non-empty strings')
+        depth = 2
+        if not isinstance(param_values, list):
+            raise ValueError('The parameters values must be a list of values')
+    elif isinstance(param_names, list) and len(param_names) > 0 and all(
+            isinstance(group, list) for group in param_names):
+        if any(len(group) == 0 for group in param_names):
+            raise ValueError('Parameter name groups must contain at least one parameter')
+        if any(any(not isinstance(name, str) or not name for name in group) for group in param_names):
+            raise ValueError('Parameter names must be non-empty strings')
         depth = 3
-        if type(param_values[0]) is not list:
+        if not isinstance(param_values, list) or len(param_values) == 0 or not isinstance(param_values[0], list):
             raise ValueError('The parameters values must be a list of values')
     else:
         raise ValueError('Unknown input format for the parameters names')
@@ -227,12 +272,34 @@ def _format_input(param_names: Union[str, list], param_values: list) -> Tuple[Li
     if len(param_names) != len(param_values):
         raise ValueError('The number of groups of parameters must be the same as the number of groups of values')
 
+    for names_group, values_group in zip(param_names, param_values):
+        if not isinstance(values_group, list):
+            raise ValueError('Each parameter group values must be provided as a list')
+        if len(names_group) != len(values_group):
+            raise ValueError('Each parameter group must include one values list per parameter')
+        if any(not isinstance(parameter_values, list) for parameter_values in values_group):
+            raise ValueError('Each parameter values entry must be a list')
+
     # Check that all parameters in the same group have the same length
     for group in param_values:
         if len(set([len(param) for param in group])) != 1:
             raise ValueError('All parameters in the same group must have the same length')
 
+    all_names = _flatten_param_names(param_names)  # type: ignore[arg-type]
+    duplicated = sorted({name for name in all_names if all_names.count(name) > 1})
+    if duplicated:
+        raise ValueError(f'Duplicate parameter names are not allowed: {duplicated}')
+
     return param_names, param_values  # type: ignore[return-value]
+
+
+def _reshape_channel_result(channel_values: List[Any], n_values: List[int]) -> np.ndarray:
+    array_result = np.array(channel_values)
+    if array_result.ndim == 0:
+        raise ValueError('Could not reshape scalar output')
+
+    target_shape = tuple(n_values) + tuple(array_result.shape[1:])
+    return array_result.reshape(target_shape)
 
 
 def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], List[List[str]]],
@@ -298,6 +365,7 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
     time_start = time()
 
     param_names, param_values = _format_input(param_names, param_values)
+    _validate_function_arguments(fun, param_names, kwargs)
 
     # Create the list of dictionaries with the parameters in a nested loop
     n_values = [len(group[0]) for group in param_values]
@@ -362,9 +430,9 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
         if reshape:
             try:
                 if n_outputs == 1:
-                    result = np.array(result[0])
+                    result = _reshape_channel_result(result[0], n_values)
                 else:
-                    result = [np.array(result[i]) for i in range(n_outputs)]
+                    result = [_reshape_channel_result(result[i], n_values) for i in range(n_outputs)]
             except ValueError:
                 print('Could not reshape the result')
 

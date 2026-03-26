@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "parameterrun"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Parallel parameter sweeps with joblib/MPI and tqdm progress bars."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -53,6 +53,10 @@ dev = [
     "build>=1.2",
     "twine>=6",
 ]
+
+[tool.hatch.version]
+path = "src/parameterrun/__init__.py"
+pattern = '__version__ = "(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/parameterrun"]

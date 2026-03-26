@@ -26,7 +26,8 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
     if len(parts) != 3:
         raise ValueError(f"Invalid version format: {version_str}. Expected: X.Y.Z")
     try:
-        return tuple(int(p) for p in parts)  # type: ignore
+        major, minor, patch = (int(p) for p in parts)
+        return major, minor, patch
     except ValueError as err:
         raise ValueError(f"Version parts must be integers: {version_str}") from err
 

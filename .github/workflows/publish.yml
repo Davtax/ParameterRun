@@ -1,13 +1,11 @@
 name: Publish
 
 on:
-  workflow_run:
-    workflows: [ "CI" ]
-    types: [ completed ]
+  release:
+    types: [ published ]
 
 jobs:
   build:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && !github.event.workflow_run.head_branch }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -15,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/setup-python@v5
         with:

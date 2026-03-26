@@ -72,7 +72,6 @@ def f(x, y, scale=1):
 
 result = parameterrun(f, param_names=["x", "y"], param_values=[[1, 2, 3], [10, 20], ], scale=2, )
 
-result = result.reshape(3, 2)
 print(result.shape)  # (3, 2)
 ```
 
@@ -89,10 +88,9 @@ def f(x, y, z):
 
 
 result = parameterrun(f, param_names=[["x", "y"], ["z"]], param_values=[[[1, 2], [10, 20]],  # (x, y) = (1,10), (2,20)
-                                                                         [[100, 200, 300]],  # z varies independently
-                                                                         ], n_workers=1, )
+                                                                        [[100, 200, 300]],  # z varies independently
+                                                                        ], n_workers=1, )
 
-result = result.reshape(2, 3)
 print(result.shape)  # (2, 3)
 ```
 
@@ -120,6 +118,18 @@ print(square_like)  # array([1, 4, 9])
 
 If the function returns a single object, the result is returned as a single array when reshaping is possible.
 
+For multi-dimensional sweeps, reshaping is automatic when `reshape=True` (default): the first dimensions always match
+the parameter grid shape.
+
+## Validation behavior
+
+`parameterrun` validates inputs before launching workers and raises clear `ValueError`s when:
+
+- parameter names are duplicated
+- a swept parameter does not exist in the target function signature
+- extra keyword arguments do not match the target function signature
+- a keyword argument conflicts with a swept parameter name
+
 ## Parallel backend
 
 `parameterrun` supports two execution backends:
@@ -134,7 +144,7 @@ If `backend=None`, the package tries to detect whether MPI is available. If MPI 
 
 ```python
 result = parameterrun(my_function, param_names=["x", "y"], param_values=[[1, 2, 3], [4, 5]], backend="joblib",
-    n_workers=-1, )
+                      n_workers=-1, )
 ```
 
 If `n_workers=1`, the function runs serially without spawning joblib workers.
@@ -182,7 +192,7 @@ The progress-bar description is generated automatically from the function name a
 
 ```python
 parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=True, verbose=False, pbar_kwargs=None,
-    reshape=True, backend=None, desc=None, **kwargs, )
+             reshape=True, backend=None, desc=None, **kwargs, )
 ```
 
 * `fun`: function to evaluate

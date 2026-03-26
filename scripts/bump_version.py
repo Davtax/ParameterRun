@@ -27,8 +27,8 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
         raise ValueError(f"Invalid version format: {version_str}. Expected: X.Y.Z")
     try:
         return tuple(int(p) for p in parts)  # type: ignore
-    except ValueError:
-        raise ValueError(f"Version parts must be integers: {version_str}")
+    except ValueError as err:
+        raise ValueError(f"Version parts must be integers: {version_str}") from err
 
 
 def version_to_string(major: int, minor: int, patch: int) -> str:
@@ -146,7 +146,7 @@ def main() -> None:
         update_init_file(init_file, new_version)
         update_changelog(changelog_file, new_version)
         print(f"\n✓ Version successfully bumped to {new_version}")
-        print(f"  Remember to: commit, tag, and push the changes")
+        print("  Remember to: commit, tag, and push the changes")
         print(f"  Example: git tag v{new_version}")
     except Exception as e:
         print(f"Error during update: {e}", file=sys.stderr)

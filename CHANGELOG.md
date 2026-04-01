@@ -6,6 +6,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-01
+
+### Added
+
+- Modified GitHub Actions workflow to trigger on pull requests to the main branch, ensuring that all changes are
+  reviewed before merging.
+
 ## [0.2.0] - 2026-03-26
 
 ### Added

@@ -4,21 +4,6 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
-## [0.3.1] - 2026-04-01
-
-### Added
-- (Your changes here)
-
-## [0.3.0] - 2026-04-01
-
-### Added
-- (Your changes here)
-
-## [0.3.0] - 2026-04-01
-
-### Added
-- (Your changes here)
-
 ## [Unreleased]
 
 ## [0.3.0] - 2026-04-01

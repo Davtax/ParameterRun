@@ -3,11 +3,6 @@ name: CI
 on:
   pull_request:
     branches: [ main ]
-  #  push:
-  #    branches: [ main ]
-  # Optional only if you use GitHub merge queue:
-  # merge_group:
-  #   types: [checks_requested]
 
 permissions:
   contents: read
@@ -35,14 +30,11 @@ jobs:
       - name: Sync environment
         run: uv sync
 
+      - name: Tests
+        run: uv run pytest
+
       - name: Lint
         run: uv run ruff check .
 
-      # - name: Format check
-      #   run: uv run ruff format --check .
-
-      # - name: Type check
-      #   run: uv run mypy
-
-      - name: Tests
-        run: uv run pytest
+      - name: Type check
+        run: uv run mypy

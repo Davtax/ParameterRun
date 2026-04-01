@@ -11,4 +11,3 @@ xs = np.linspace(0, 10, 100)
 ys = np.linspace(0, 20, 50)
 
 result = parameterrun(f, param_names=[["x"], ["y"]], param_values=[[xs], [ys]], n_workers=1, scale=2, )
-result = result.reshape(len(xs), len(ys))

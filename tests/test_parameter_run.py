@@ -15,6 +15,17 @@ def test_parameterrun_single_parameter_returns_1d_array():
     np.testing.assert_array_equal(result, np.array([0, 1, 4, 9]))
 
 
+def test_parameterrun_single_parameter_can_return_list():
+    def square(x):
+        return x ** 2
+
+    result = pu.parameterrun(square, param_names="x", param_values=[0, 1, 2, 3], n_workers=1, pbar_bool=False,
+                             backend="joblib", result_as_array=False, )
+
+    assert isinstance(result, list)
+    assert result == [0, 1, 4, 9]
+
+
 def test_parameterrun_grouped_parameters_builds_expected_grid():
     def f(x, y, z, offset=0):
         return x + y + z + offset
@@ -45,6 +56,17 @@ def test_parameterrun_multiple_outputs_returns_list_of_arrays():
 
     np.testing.assert_array_equal(result[0], np.array([2, 3, 4]))
     np.testing.assert_array_equal(result[1], np.array([1, 4, 9]))
+
+
+def test_parameterrun_multiple_outputs_can_return_list_of_lists():
+    def f(x):
+        return x + 1, x ** 2
+
+    result = pu.parameterrun(f, param_names="x", param_values=[1, 2, 3], n_workers=1, pbar_bool=False,
+                             backend="joblib", result_as_array=False, )
+
+    assert isinstance(result, list)
+    assert result == [[2, 3, 4], [1, 4, 9]]
 
 
 def test_parameterrun_multiple_outputs_keep_grid_shape():

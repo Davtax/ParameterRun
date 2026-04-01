@@ -114,9 +114,16 @@ print(mean_like)
 # array([2, 3, 4])
 
 print(square_like)  # array([1, 4, 9])
+
+# Ask for plain Python lists instead of numpy arrays
+mean_like, square_like = parameterrun(stats, param_names="x", param_values=[1, 2, 3], n_workers=1,
+                                      result_as_array=False, )
+
+print(mean_like)  # [2, 3, 4]
 ```
 
 If the function returns a single object, the result is returned as a single array when reshaping is possible.
+Set `result_as_array=False` to convert outputs to Python lists.
 
 For multi-dimensional sweeps, reshaping is automatic when `reshape=True` (default): the first dimensions always match
 the parameter grid shape.
@@ -191,18 +198,18 @@ The progress-bar description is generated automatically from the function name a
 `parameterrun`
 
 ```python
-parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=True, verbose=False, pbar_kwargs=None,
-             reshape=True, backend=None, desc=None, **kwargs, )
+parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=True, verbose=False,
+             reshape=True, result_as_array=True, backend=None, desc=None, **kwargs, )
 ```
 
 * `fun`: function to evaluate
 * `param_names`: parameter name or grouped parameter names
-* `param_values`: values corresponding to `param_names`
+* `param_values`: values corresponding to `param_names` (any iterable, e.g. list, tuple, range, numpy array)
 * `n_workers`: number of workers for `joblib`
 * `pbar_bool`: enable or disable progress bars
 * `verbose`: print backend and timing information
-* `pbar_kwargs`: additional keyword arguments passed to tqdm
 * `reshape`: reshape results into arrays when possible
+* `result_as_array`: return numpy arrays by default; if `False`, convert outputs to Python lists
 * `backend`: `"joblib"`, `"mpi"`, or `None`
 * `desc`: custom progress-bar label
 * `**kwargs`: extra fixed keyword arguments forwarded to `fun`
@@ -210,6 +217,9 @@ parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=True, verbo
 ## Input formats
 
 `parameterrun` accepts three input styles.
+
+At every style, value containers can be any iterable (for example lists, tuples, ranges, generators, or numpy
+arrays).
 
 ### A. Single parameter
 

@@ -4,7 +4,32 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
+## [0.3.1] - 2026-04-01
+
+### Added
+- (Your changes here)
+
+## [0.3.0] - 2026-04-01
+
+### Added
+- (Your changes here)
+
+## [0.3.0] - 2026-04-01
+
+### Added
+- (Your changes here)
+
 ## [Unreleased]
+
+## [0.3.0] - 2026-04-01
+
+### Changed
+
+- Added `result_as_array` to `parameterrun(...)`: outputs are numpy arrays by default and can be converted to Python
+  lists with `result_as_array=False`.
+- Removed the `pbar_kwargs` optional argument from `parameterrun(...)`, as it was unused.
+- Added more tests for the depth of the parameter grid.
+- Added the possibility to add parameter values as numpy arrays, which are converted to lists internally.
 
 ## [0.2.1] - 2026-04-01
 

@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from parameterrun.parallel_utils import _format_input
@@ -25,9 +26,27 @@ def test_format_input_rejects_empty_parameter_name():
         _format_input("", [1, 2])
 
 
-def test_format_input_rejects_non_list_group_values():
-    with pytest.raises(ValueError, match="values entry must be a list"):
-        _format_input([["x"]], [[(1, 2)]])
+def test_format_input_accepts_numpy_array_values():
+    names, values = _format_input("x", np.array([1, 2, 3]))
+    assert names == [["x"]]
+    assert values == [[[1, 2, 3]]]
+
+
+def test_format_input_accepts_iterables_in_multiple_parameter_format():
+    names, values = _format_input(["x", "y"], (range(3), (10, 20, 30)))
+    assert names == [["x"], ["y"]]
+    assert values == [[[0, 1, 2]], [[10, 20, 30]]]
+
+
+def test_format_input_accepts_tuple_parameter_values_inside_group():
+    names, values = _format_input([["x"]], [[(1, 2)]])
+    assert names == [["x"]]
+    assert values == [[[1, 2]]]
+
+
+def test_format_input_rejects_string_values():
+    with pytest.raises(ValueError, match="iterable of values"):
+        _format_input("x", "123")
 
 
 def test_format_input_rejects_duplicate_names():

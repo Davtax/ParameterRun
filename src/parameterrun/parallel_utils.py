@@ -327,7 +327,7 @@ def _convert_result_to_lists(result: Any) -> Any:
 def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], List[List[str]]],
                  param_values: Union[Iterable[Any], Iterable[Iterable[Any]], Iterable[Iterable[Iterable[Any]]]],
                  n_workers: Optional[int] = -1, pbar_bool: bool = True, verbose: Optional[bool] = False,
-                 reshape: Optional[bool] = True, result_as_array: Optional[bool] = True, backend: Optional[str] = None,
+                 reshape: bool = True, result_as_array: bool = True, backend: Optional[str] = None,
                  desc: Optional[str] = None, **kwargs) -> Union[list, np.ndarray, None]:  # noqa: E501
     """
     Run a function with multiple parameters in parallel. To indentify the parameters of interest, user must provide its

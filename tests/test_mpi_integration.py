@@ -25,8 +25,6 @@ def test_parameterrun_mpi_numerical_equivalence_and_root_return():
 
     if comm.Get_rank() == 0:
         assert isinstance(result, np.ndarray)
-
-        return np.testing.assert_allclose(result, expected)
+        np.testing.assert_allclose(result, expected)
     else:
         assert result is None
-        return None

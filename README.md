@@ -241,9 +241,17 @@ param_values = [[[1, 2], [10, 20]], [[100, 200, 300]], ]
 Before opening a PR or publishing a release, run:
 
 ```bash
-pytest
+pytest -m "not mpi"
 ruff check .
 mypy
 python -m build
 python -m twine check dist/*
 ```
+
+For MPI numerical-equivalence checks (Linux/OpenMPI, 4 ranks):
+
+```bash
+uv sync --extra mpi
+mpirun -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+```
+

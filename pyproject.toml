@@ -64,6 +64,9 @@ packages = ["src/parameterrun"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --cov=parameterrun --cov-report=term-missing --cov-fail-under=70"
+markers = [
+    "mpi: tests that require mpi4py and an MPI launcher",
+]
 
 [tool.ruff]
 target-version = "py39"

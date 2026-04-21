@@ -178,12 +178,6 @@ By default, progress bars are enabled:
 result = parameterrun(my_function, param_names="x", param_values=[1, 2, 3], pbar_bool=True, )
 ```
 
-You can also pass extra keyword arguments to `tqdm` through `pbar_kwargs`:
-
-```python
-result = parameterrun(my_function, param_names="x", param_values=[1, 2, 3], pbar_kwargs={"leave": False}, )
-```
-
 Verbose logging can be enabled with:
 
 ```python
@@ -247,9 +241,17 @@ param_values = [[[1, 2], [10, 20]], [[100, 200, 300]], ]
 Before opening a PR or publishing a release, run:
 
 ```bash
-pytest
+pytest -m "not mpi"
 ruff check .
-mypy src/parameterrun
+mypy
 python -m build
 python -m twine check dist/*
 ```
+
+For MPI numerical-equivalence checks (Linux/OpenMPI, 4 ranks):
+
+```bash
+uv sync --extra mpi
+mpirun -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+```
+

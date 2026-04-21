@@ -4,22 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
-## [0.3.1] - 2026-04-01
-
-### Added
-- (Your changes here)
-
-## [0.3.0] - 2026-04-01
-
-### Added
-- (Your changes here)
-
-## [0.3.0] - 2026-04-01
-
-### Added
-- (Your changes here)
-
 ## [Unreleased]
+
+## [0.4.0] - 2026-04-21
+
+### Added
+
+- Added `tests/test_mpi_integration.py` with MPI numerical-equivalence coverage for `parameterrun(..., backend="mpi")`.
+- Added a dedicated Linux PR CI job that runs MPI tests with 4 ranks.
+
+### Changed
+
+- Updated default test commands in docs and CI to run non-MPI tests with `-m "not mpi"`.
+- Registered a pytest `mpi` marker in `pyproject.toml` for explicit MPI test selection.
+- Update how the indices to compute are shared among workers. Previously, all the indices where computed by all workers,
+  which caused a significan overhead in the memory usage. Now, the indices are computed on the fly.
 
 ## [0.3.0] - 2026-04-01
 

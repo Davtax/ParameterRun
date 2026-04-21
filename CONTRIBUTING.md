@@ -13,11 +13,20 @@ If you do not use `uv`, create a virtual environment and install equivalent dev 
 ## Run quality checks
 
 ```bash
-uv run pytest
+uv run pytest -m "not mpi"
 uv run ruff check .
 uv run mypy
 uv run python -m build
 uv run python -m twine check dist/*
+```
+
+## Run MPI checks (required on PR CI)
+
+The PR workflow includes a dedicated Linux MPI job that runs with 4 ranks.
+
+```bash
+uv sync --extra mpi
+mpirun -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
 ```
 
 ## Pull request guidelines

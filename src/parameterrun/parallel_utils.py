@@ -60,19 +60,20 @@ def tqdm_joblib(tqdm_object: tqdm):
 
 def _parameterrun_joblib(fun: Callable[..., Any], param_names: List[List[str]], param_values: List[List[List]],
                          indices_iterate: Iterable, desc, n_workers: Optional[int] = -1, pbar_bool: bool = True,
-                         leave: Optional[bool] = True, **fun_kwargs) -> Tuple[List[List], int]:
+                         pbar_leave: Optional[bool] = True, **fun_kwargs) -> Tuple[List[List], int]:
+    n_values = [len(group[0]) for group in param_values]
+    n_total = prod(n_values)  # Compute the total number of iterations
+
     result = []
     if n_workers == 1:  # If only one worker, do not use joblib
-        pbar = tqdm(indices_iterate, desc=desc, leave=leave, disable=not pbar_bool)
+        pbar = tqdm(indices_iterate, total=n_total, desc=desc, leave=pbar_leave, disable=not pbar_bool)
         for index in pbar:
             result.append(fun(**{**_get_iteration(index, param_names, param_values), **fun_kwargs}))
     else:
-        with tqdm_joblib(tqdm(indices_iterate, desc=desc, leave=leave, disable=not pbar_bool)) as _:
+        with tqdm_joblib(tqdm(indices_iterate, total=n_total, desc=desc, leave=pbar_leave, disable=not pbar_bool)) as _:
             result = Parallel(n_jobs=n_workers)(
                 delayed(fun)(**{**_get_iteration(index, param_names, param_values), **fun_kwargs}) for index in
                 indices_iterate)
-
-    n_total = len(result)
 
     n_output = len(result[0]) if isinstance(result[0], tuple) else 1
     if n_output == 1:
@@ -97,7 +98,7 @@ def _product_element_from_index(lists: List[Any], k: int) -> List:
 
 def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], param_values: List[List[List]],
                       desc: Optional[str], pbar_bool: bool = True, verbose: Optional[bool] = False,
-                      leave: Optional[bool] = True, seed=None, **fun_kwargs) -> Tuple[
+                      pbar_leave: Optional[bool] = True, seed=None, **fun_kwargs) -> Tuple[
     List[List], int]:  # pragma: no cover
     from mpi4py import MPI
 
@@ -120,12 +121,11 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
     total_indices = comm.bcast(total_indices, root=0)
     indices_compute = np.array_split(total_indices, size)[rank]
 
-    # groups_compute = np.array(groups_iterate)[indices_compute]
     groups_compute = []
     for index in indices_compute:
         groups_compute.append(_product_element_from_index(indices, index))
 
-    pbar = tqdm(groups_compute, desc=desc, leave=leave, disable=not (pbar_bool and rank == 0), file=sys.stdout)
+    pbar = tqdm(groups_compute, desc=desc, leave=pbar_leave, disable=not (pbar_bool and rank == 0), file=sys.stdout)
 
     n_outputs = 0
     result: List[Any] = []
@@ -159,7 +159,8 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
     # Notify root when each worker is done, and show a progress bar
     if rank == 0:
         progress = 0
-        pbar = tqdm(total=size - 1, desc='Waiting for workers', leave=leave, disable=not pbar_bool, file=sys.stdout)
+        pbar = tqdm(total=size - 1, desc='Waiting for workers', leave=pbar_leave, disable=not pbar_bool,
+                    file=sys.stdout)
 
         while progress < size - 1:
             if comm.Iprobe(source=MPI.ANY_SOURCE, tag=0):
@@ -189,6 +190,7 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
         _log('Results gathered', verbose and rank == 0, hostname=MPI.Get_processor_name())
 
         if rank == 0:
+            assert result_gathered is not None  # For type checker
             result_gathered = [item for sublist in result_gathered for item in sublist]  # Flatten the list
 
             results_unshuffled = [None] * n_total
@@ -341,9 +343,10 @@ def _convert_result_to_lists(result: Any) -> Any:
 
 def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], List[List[str]]],
                  param_values: Union[Iterable[Any], Iterable[Iterable[Any]], Iterable[Iterable[Iterable[Any]]]],
-                 n_workers: Optional[int] = -1, pbar_bool: bool = True, verbose: Optional[bool] = False,
-                 reshape: bool = True, result_as_array: bool = True, backend: Optional[str] = None,
-                 desc: Optional[str] = None, **kwargs) -> Union[list, np.ndarray, None]:  # noqa: E501
+                 n_workers: Optional[int] = -1, pbar_bool: bool = True, pbar_leave: bool = True,
+                 verbose: Optional[bool] = False, reshape: bool = True, result_as_array: bool = True,
+                 backend: Optional[str] = None, desc: Optional[str] = None, **fun_kwargs) -> Union[
+    list, np.ndarray, None]:  # noqa: E501
     """
     Run a function with multiple parameters in parallel. To indentify the parameters of interest, user must provide its
     name as is written in the function definition. If more parameters should be pass to the function, they can be
@@ -376,6 +379,8 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
         Number of workers to use in parallel. If -1, the number of workers is the maximum number of cores available.
     pbar_bool : bool, optional (default=True)
         If True, show a progress bar.
+    pbar_leave : bool, optional (default=True)
+        If True, leave the progress bar after completion.
     backend : str, optional (default=None)
         Backend to use for the parallelization. If None, the backend is chosen automatically between joblib and mpi.
     verbose : bool, optional (default=False)
@@ -388,7 +393,7 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
         lists.
     desc: str, optional (default=None)
         Description of the progress bar. If None, the description denotes the function and parameters names.
-    kwargs :
+    fun_kwargs :
         Additional parameters to pass to the function.
 
     Returns
@@ -401,7 +406,7 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
     time_start = time()
 
     formatted_param_names, formatted_param_values = _format_input(param_names, param_values)
-    _validate_function_arguments(fun, formatted_param_names, kwargs)
+    _validate_function_arguments(fun, formatted_param_names, fun_kwargs)
 
     # Create the list of dictionaries with the parameters in a nested loop
     n_values = [len(group[0]) for group in formatted_param_values]
@@ -452,14 +457,15 @@ def parameterrun(fun: Callable[..., Any], param_names: Union[str, List[str], Lis
         indices = [list(range(n_value)) for n_value in n_values]
         indices_iterate = product(*indices)
         result, n_outputs = _parameterrun_joblib(fun, formatted_param_names, formatted_param_values, indices_iterate,
-                                                 desc, n_workers=n_workers, pbar_bool=pbar_bool, **kwargs)
+                                                 desc, n_workers=n_workers, pbar_bool=pbar_bool, pbar_leave=pbar_leave,
+                                                 **fun_kwargs)
 
     elif backend == 'mpi':
         _log(f'Running under mpi with {size} workers', verbose and rank == 0,
              hostname=mpi_module.Get_processor_name() if mpi_module is not None else None, )
 
         result, n_outputs = _parameterrun_mpi(fun, formatted_param_names, formatted_param_values, desc,
-                                              pbar_bool=pbar_bool, verbose=verbose, **kwargs)
+                                              pbar_bool=pbar_bool, pbar_leave=pbar_leave, verbose=verbose, **fun_kwargs)
 
     else:
         raise ValueError('Unknown backend')

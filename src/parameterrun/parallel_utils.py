@@ -120,7 +120,6 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
     total_indices = comm.bcast(total_indices, root=0)
     indices_compute = np.array_split(total_indices, size)[rank]
 
-    # groups_compute = np.array(groups_iterate)[indices_compute]
     groups_compute = []
     for index in indices_compute:
         groups_compute.append(_product_element_from_index(indices, index))
@@ -189,6 +188,7 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
         _log('Results gathered', verbose and rank == 0, hostname=MPI.Get_processor_name())
 
         if rank == 0:
+            assert result_gathered is not None  # For type checker
             result_gathered = [item for sublist in result_gathered for item in sublist]  # Flatten the list
 
             results_unshuffled = [None] * n_total

@@ -158,7 +158,7 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
 
         pbar.close()
     else:
-        comm.send(1, dest=0, tag=0)  # Notify root that the work is done
+        comm.send(True, dest=0, tag=0)  # Notify root that the work is done
 
     n_outputs = comm.bcast(n_outputs, root=0)
 

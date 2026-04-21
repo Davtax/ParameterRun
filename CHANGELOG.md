@@ -6,6 +6,17 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-21
+
+### Fixed
+
+- Fix the display of the progress bar when running with `backend="joblib"`, since the previous implementation didn't
+  have access to the total number of runs to compute, which is required for the progress bar to work properly.
+
+### Added
+
+- Added a test for the progress bar display when running with `backend="joblib"`.
+
 ## [0.4.0] - 2026-04-21
 
 ### Added

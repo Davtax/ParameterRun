@@ -13,6 +13,8 @@ import numpy as np
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 
+from ._pseudo_random import local_values
+
 
 def _normalized_time(time_seg: float) -> str:
     """
@@ -110,32 +112,33 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
     indices = [list(range(n_value)) for n_value in n_values]
     n_total = prod(n_values)  # Compute the total number of iterations
 
-    # Shuffle the indices to avoid bias in the computation
+    # Broadcast seed to all workers to ensure deterministic shuffling
     if rank == 0:
-        rng = np.random.default_rng(seed=seed)
-        total_indices = np.arange(n_total)
-        rng.shuffle(total_indices)
-    else:
-        total_indices = None
+        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]) if rank == 0 else None
+    seed = comm.bcast(seed, root=0)
+    assert isinstance(seed, int)  # For type checker
+    count = n_total // size + (1 if rank < (n_total % size) else 0)
 
-    total_indices = comm.bcast(total_indices, root=0)
-    indices_compute = np.array_split(total_indices, size)[rank]
+    # Use a generator to avoid storing all groups in memory and all indices
+    def groups_compute_generator():
+        for idx in local_values(n_total, size, rank, seed):
+            yield int(idx), _product_element_from_index(indices, int(idx))
 
-    groups_compute = []
-    for index in indices_compute:
-        groups_compute.append(_product_element_from_index(indices, index))
+    groups_compute = groups_compute_generator()
 
-    pbar = tqdm(groups_compute, desc=desc, leave=pbar_leave, disable=not (pbar_bool and rank == 0), file=sys.stdout)
+    pbar = tqdm(groups_compute, desc=desc, leave=pbar_leave, disable=not (pbar_bool and rank == 0), file=sys.stdout,
+                total=count)
 
     n_outputs = 0
     result: List[Any] = []
+    result_indices: List[int] = []  # Track original indices for later sorting
 
     if 'Open MPI v5.0.6' in MPI.Get_library_version():
         mpi_flush = True
     else:
         mpi_flush = False
 
-    for index in pbar:
+    for orig_idx, index in pbar:
         if pbar_bool and rank == 0 and mpi_flush:
             print('\r', flush=True)  # Needed to show the progress bar in some mpi versions
             sys.stdout.write("\033[F")  # Move the cursor up one line
@@ -153,6 +156,9 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
 
         for i, result_temp_i in enumerate(result_temp):
             result[i].append(result_temp_i)
+
+        # Store the original index for this result
+        result_indices.append(orig_idx)
 
     _log(f'Rank {rank} finished', verbose, hostname=MPI.Get_processor_name())
 
@@ -181,6 +187,12 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
     if not result:  # For workers that did not compute anything
         result = [[] for _ in range(n_outputs)]
 
+    if not result_indices:  # For workers that did not compute anything
+        result_indices = []
+
+    # Gather indices and results from all workers
+    indices_gathered = comm.gather(result_indices, root=0)
+
     results_gathered = []
     for i in range(n_outputs):
         _log(f'Gathering results {i}', verbose and rank == 0, hostname=MPI.Get_processor_name())
@@ -191,13 +203,17 @@ def _parameterrun_mpi(fun: Callable[..., Any], param_names: List[List[str]], par
 
         if rank == 0:
             assert result_gathered is not None  # For type checker
-            result_gathered = [item for sublist in result_gathered for item in sublist]  # Flatten the list
+            assert indices_gathered is not None  # For type checker
 
-            results_unshuffled = [None] * n_total
-            for j, index in enumerate(total_indices):
-                results_unshuffled[index] = result_gathered[j]
+            # Flatten the results and indices
+            result_gathered = [item for sublist in result_gathered for item in sublist]
+            indices_gathered = [idx for sublist in indices_gathered for idx in sublist]
 
-            results_gathered.append(results_unshuffled)
+            # Sort results by original index
+            sorted_pairs = sorted(zip(indices_gathered, result_gathered), key=lambda x: x[0])
+            results_sorted = [item[1] for item in sorted_pairs]
+
+            results_gathered.append(results_sorted)
 
         _log('Results reshaped', verbose and rank == 0, hostname=MPI.Get_processor_name())
 

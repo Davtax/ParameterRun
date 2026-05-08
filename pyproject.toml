@@ -52,6 +52,9 @@ dev = [
     "mypy>=1.10",
     "build>=1.2",
     "twine>=6",
+    "pydevd-pycharm>=261.23567.174",
+    "psutil>=7.2.2",
+    "scalene>=2.2.1",
 ]
 
 [tool.hatch.version]

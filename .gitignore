@@ -208,3 +208,6 @@ __marimo__/
 
 # uv files
 uv.lock
+
+# profile files
+dev/profiles/*

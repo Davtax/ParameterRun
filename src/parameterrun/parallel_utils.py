@@ -1,7 +1,7 @@
 import contextlib
 import inspect
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from datetime import datetime
 from itertools import product
 from math import prod
@@ -31,6 +31,13 @@ def _normalized_time(time_seg: float) -> str:
         return f"{int(hours)} h {int(mins)} min {sec:.2f} s"
 
 
+def _callable_name(fun: Callable[..., Any]) -> str:
+    """
+    Name of a callable, falling back to its repr for objects without __name__ (e.g. functools.partial)
+    """
+    return getattr(fun, "__name__", repr(fun))
+
+
 def _log(message: str, verbose: Optional[bool] = False, hostname: Optional[str] = None) -> None:
     if verbose:
         # Compute timestamp
@@ -43,7 +50,7 @@ def _log(message: str, verbose: Optional[bool] = False, hostname: Optional[str] 
 
 
 @contextlib.contextmanager
-def tqdm_joblib(tqdm_object: tqdm) -> Iterator[tqdm]:
+def tqdm_joblib(tqdm_object: tqdm) -> Generator[tqdm, None, None]:
     """Context manager to patch joblib to report into tqdm progress bar given as argument"""
 
     class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
@@ -52,7 +59,7 @@ def tqdm_joblib(tqdm_object: tqdm) -> Iterator[tqdm]:
             return super().__call__(*args, **kwargs)
 
     old_batch_callback = joblib.parallel.BatchCompletionCallBack
-    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback  # ty: ignore[invalid-assignment]
     try:
         yield tqdm_object
     finally:
@@ -290,11 +297,11 @@ def _validate_function_arguments(
     known_names = set(parameters)
     unknown_sweep = sorted(name for name in sweep_names if name not in known_names)
     if unknown_sweep:
-        raise ValueError(f"Unknown swept parameter names for function {fun.__name__}: {unknown_sweep}")
+        raise ValueError(f"Unknown swept parameter names for function {_callable_name(fun)}: {unknown_sweep}")
 
     unknown_kwargs = sorted(name for name in fun_kwargs if name not in known_names)
     if unknown_kwargs:
-        raise ValueError(f"Unknown keyword arguments for function {fun.__name__}: {unknown_kwargs}")
+        raise ValueError(f"Unknown keyword arguments for function {_callable_name(fun)}: {unknown_kwargs}")
 
 
 def _format_input(
@@ -501,7 +508,7 @@ def parameterrun(
 
     if desc is None:
         param_names_pbar = [parameters_names_i for parameters_names_i in formatted_param_names]
-        auto_desc = f"{fun.__name__}: {param_names_pbar}"
+        auto_desc = f"{_callable_name(fun)}: {param_names_pbar}"
 
         if len(auto_desc) > 40:
             auto_desc = auto_desc[:40] + "(...)]"

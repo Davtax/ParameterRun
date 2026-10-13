@@ -62,4 +62,4 @@ jobs:
         run: uv sync --extra mpi
 
       - name: MPI tests (4 ranks)
-        run: mpirun -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+        run: mpiexec -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"

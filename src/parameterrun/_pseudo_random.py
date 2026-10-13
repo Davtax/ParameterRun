@@ -52,4 +52,3 @@ def local_values(total: int, workers: int, worker_rank: int, base_seed: int):
     for k in range(local_count):
         value = np.int64(worker_rank) + k * np.int64(workers)
         yield _permute_in_range(int(value), total=total, key=key)
-

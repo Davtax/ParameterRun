@@ -211,3 +211,6 @@ uv.lock
 
 # profile files
 dev/profiles/*
+
+# Claude
+.claude/

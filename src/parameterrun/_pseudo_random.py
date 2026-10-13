@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+
 import numpy as np
 
 
@@ -40,7 +42,7 @@ def _permute_in_range(x: int, total: int, key: int) -> int:
             return y
 
 
-def local_values(total: int, workers: int, worker_rank: int, base_seed: int):
+def local_values(total: int, workers: int, worker_rank: int, base_seed: int) -> Iterator[int]:
     """Yield this rank's values using interleaved positions in a global permutation."""
     if total <= 0:
         return

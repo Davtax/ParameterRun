@@ -1,3 +1,5 @@
+from collections.abc import Callable, Iterable, Iterator
+
 import numpy as np
 from mpi4py import MPI
 
@@ -17,9 +19,14 @@ seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]) if ra
 seed = comm.bcast(seed, root=0)
 
 
-def evaluate_randomness(n_total, n_workers, local_values_fn, trials=5000):
+def evaluate_randomness(
+    n_total: int,
+    n_workers: int,
+    local_values_fn: Callable[[int, int, int, int], Iterator[int]],
+    trials: int = 5000,
+) -> None:
     # counts[r, v] = how often value v is assigned to rank r
-    counts = np.zeros((n_workers, n_total), dtype=np.int64)
+    counts: np.ndarray = np.zeros((n_workers, n_total), dtype=np.int64)
 
     for _ in range(trials):
         seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0])
@@ -38,15 +45,17 @@ def evaluate_randomness(n_total, n_workers, local_values_fn, trials=5000):
         assert min(merged) >= 0 and max(merged) < n_total
 
     # expected probability that a value lands on each rank
-    local_counts = np.array([n_total // n_workers + (1 if r < (n_total % n_workers) else 0) for r in range(n_workers)],
-                            dtype=float, )
+    local_counts = np.array(
+        [n_total // n_workers + (1 if r < (n_total % n_workers) else 0) for r in range(n_workers)],
+        dtype=float,
+    )
     p_rank = local_counts / n_total
     expected = trials * p_rank[:, None]  # shape (workers, 1), broadcast to values
 
     # z-score per (rank, value): should be mostly within about [-3, 3]
     var = expected * (1 - p_rank[:, None])
     z = (counts - expected) / np.sqrt(np.maximum(var, 1e-12))
-    max_abs_z = np.max(np.abs(z))
+    max_abs_z = float(np.max(np.abs(z)))
 
     print("max |z| across (rank,value):", float(max_abs_z))
     print("mean |z|:", float(np.mean(np.abs(z))))
@@ -71,7 +80,7 @@ for r in range(size):
 comm.Barrier()
 
 
-def verify_exact_cover(total: int, worker_rank: int, values_iter):
+def verify_exact_cover(total: int, worker_rank: int, values_iter: Iterable[int]) -> None:
     """Check that global outputs contain each number in [0, total) exactly once."""
     local_vals = np.fromiter(values_iter, dtype=np.int64)
 
@@ -101,4 +110,8 @@ def verify_exact_cover(total: int, worker_rank: int, values_iter):
                 print(f"  repeated: {repeated[:10]}{' ...' if repeated.size > 10 else ''}")
 
 
-verify_exact_cover(total=n_total, worker_rank=rank, values_iter=local_values(n_total, size, rank, seed), )
+verify_exact_cover(
+    total=n_total,
+    worker_rank=rank,
+    values_iter=local_values(n_total, size, rank, seed),
+)

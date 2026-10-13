@@ -3,7 +3,7 @@ import numpy as np
 from parameterrun import parameterrun
 
 
-def f(a, b, c, d, scale=1):
+def f(a: float, b: float, c: float, d: float, scale: float = 1) -> float:
     return scale * (a + b + c + d)
 
 
@@ -17,8 +17,9 @@ b_s = np.linspace(0, 20, 50)
 c_s = np.linspace(0, 20, 20)
 d_s = np.linspace(0, 20, 20)
 
-result = parameterrun(f, param_names=[["a"], ["b"], ["c"], ["d"]], param_values=[[a_s], [b_s], [c_s], [d_s]], scale=2,
-                      backend='mpi')
+result = parameterrun(
+    f, param_names=[["a"], ["b"], ["c"], ["d"]], param_values=[[a_s], [b_s], [c_s], [d_s]], scale=2, backend="mpi"
+)
 
 # if rank == 0:
 #     expected = 2 * (a_s[:, None, None, None] + b_s[None, :, None, None] + c_s[None, None, :, None] + d_s[

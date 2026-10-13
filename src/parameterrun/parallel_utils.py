@@ -1,12 +1,12 @@
 import contextlib
 import inspect
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import datetime
 from itertools import product
 from math import prod
 from time import time
-from typing import Any, Callable, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Optional, Union, cast
 
 import joblib
 import numpy as np
@@ -43,11 +43,11 @@ def _log(message: str, verbose: Optional[bool] = False, hostname: Optional[str] 
 
 
 @contextlib.contextmanager
-def tqdm_joblib(tqdm_object: tqdm):
+def tqdm_joblib(tqdm_object: tqdm) -> Iterator[tqdm]:
     """Context manager to patch joblib to report into tqdm progress bar given as argument"""
 
     class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
-        def __call__(self, *args, **kwargs):
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
             tqdm_object.update(n=self.batch_size)
             return super().__call__(*args, **kwargs)
 
@@ -62,19 +62,19 @@ def tqdm_joblib(tqdm_object: tqdm):
 
 def _parameterrun_joblib(
     fun: Callable[..., Any],
-    param_names: List[List[str]],
-    param_values: List[List[List]],
-    indices_iterate: Iterable,
-    desc,
+    param_names: list[list[str]],
+    param_values: list[list[list[Any]]],
+    indices_iterate: Iterable[tuple[int, ...]],
+    desc: Optional[str],
     n_workers: Optional[int] = -1,
     pbar_bool: bool = True,
     pbar_leave: Optional[bool] = True,
-    **fun_kwargs,
-) -> Tuple[List[List], int]:
+    **fun_kwargs: Any,
+) -> tuple[list[list[Any]], int]:
     n_values = [len(group[0]) for group in param_values]
     n_total = prod(n_values)  # Compute the total number of iterations
 
-    result = []
+    result: list[Any] = []
     if n_workers == 1:  # If only one worker, do not use joblib
         pbar = tqdm(indices_iterate, total=n_total, desc=desc, leave=pbar_leave, disable=not pbar_bool)
         for index in pbar:
@@ -97,7 +97,7 @@ def _parameterrun_joblib(
     return result_temp, n_output
 
 
-def _product_element_from_index(lists: List[Any], k: int) -> List:
+def _product_element_from_index(lists: list[list[int]], k: int) -> list[int]:
     lengths = [len(L) for L in lists]
 
     indices = [0] * len(lists)
@@ -109,15 +109,15 @@ def _product_element_from_index(lists: List[Any], k: int) -> List:
 
 def _parameterrun_mpi(
     fun: Callable[..., Any],
-    param_names: List[List[str]],
-    param_values: List[List[List]],
+    param_names: list[list[str]],
+    param_values: list[list[list[Any]]],
     desc: Optional[str],
     pbar_bool: bool = True,
     verbose: Optional[bool] = False,
     pbar_leave: Optional[bool] = True,
-    seed=None,
-    **fun_kwargs,
-) -> Tuple[List[List], int]:  # pragma: no cover
+    seed: Optional[int] = None,
+    **fun_kwargs: Any,
+) -> tuple[list[list[Any]], int]:  # pragma: no cover
     from mpi4py import MPI
 
     comm = MPI.COMM_WORLD
@@ -136,7 +136,7 @@ def _parameterrun_mpi(
     count = n_total // size + (1 if rank < (n_total % size) else 0)
 
     # Use a generator to avoid storing all groups in memory and all indices
-    def groups_compute_generator():
+    def groups_compute_generator() -> Iterator[tuple[int, list[int]]]:
         for idx in local_values(n_total, size, rank, seed):
             yield int(idx), _product_element_from_index(indices, int(idx))
 
@@ -147,8 +147,8 @@ def _parameterrun_mpi(
     )
 
     n_outputs = 0
-    result: List[Any] = []
-    result_indices: List[int] = []  # Track original indices for later sorting
+    result: list[Any] = []
+    result_indices: list[int] = []  # Track original indices for later sorting
 
     if "Open MPI v5.0.6" in MPI.Get_library_version():
         mpi_flush = True
@@ -238,11 +238,13 @@ def _parameterrun_mpi(
     return results_gathered, n_outputs
 
 
-def _get_iteration(index, param_names, param_values):
+def _get_iteration(
+    index: Sequence[int], param_names: list[list[str]], param_values: list[list[list[Any]]]
+) -> dict[str, Any]:
     n_groups = len(param_values)
     n_parameters = [len(group) for group in param_values]
 
-    dic_temp = {}
+    dic_temp: dict[str, Any] = {}
     for group_index in range(n_groups):
         for parameter_index in range(n_parameters[group_index]):
             dic_temp[param_names[group_index][parameter_index]] = param_values[group_index][parameter_index][
@@ -252,17 +254,19 @@ def _get_iteration(index, param_names, param_values):
     return dic_temp
 
 
-def _flatten_param_names(param_names: List[List[str]]) -> List[str]:
+def _flatten_param_names(param_names: list[list[str]]) -> list[str]:
     return [name for group in param_names for name in group]
 
 
-def _to_list_iterable(values: Any, error_message: str) -> List[Any]:
+def _to_list_iterable(values: Any, error_message: str) -> list[Any]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise ValueError(error_message)
     return list(values)
 
 
-def _validate_function_arguments(fun: Callable[..., Any], param_names: List[List[str]], fun_kwargs: dict) -> None:
+def _validate_function_arguments(
+    fun: Callable[..., Any], param_names: list[list[str]], fun_kwargs: dict[str, Any]
+) -> None:
     signature = inspect.signature(fun)
     parameters = signature.parameters
     accepts_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
@@ -294,8 +298,8 @@ def _validate_function_arguments(fun: Callable[..., Any], param_names: List[List
 
 
 def _format_input(
-    param_names: Union[str, List[str], List[List[str]]], param_values: Any
-) -> Tuple[List[List[str]], List[List[List[Any]]]]:
+    param_names: Union[str, list[str], list[list[str]]], param_values: Any
+) -> tuple[list[list[str]], list[list[list[Any]]]]:
     # Check the depth of the parameters
 
     if isinstance(param_names, str):
@@ -317,8 +321,8 @@ def _format_input(
     else:
         raise ValueError("Unknown input format for the parameters names")
 
-    normalized_param_names: List[List[str]]
-    normalized_param_values: List[List[List[Any]]]
+    normalized_param_names: list[list[str]]
+    normalized_param_values: list[list[list[Any]]]
 
     # Correct the input if the depth is not equal to 3
     if depth == 1:
@@ -329,7 +333,7 @@ def _format_input(
     elif depth == 2:
         # Groups with a single parameters are provided
         values = _to_list_iterable(param_values, "The parameters values must be an iterable of values")
-        normalized_param_names = [[param_name_i] for param_name_i in cast(List[str], param_names)]
+        normalized_param_names = [[param_name_i] for param_name_i in cast(list[str], param_names)]
         normalized_param_values = [
             [_to_list_iterable(param_values_i, "Each parameter values entry must be an iterable")]
             for param_values_i in values
@@ -340,7 +344,7 @@ def _format_input(
             _to_list_iterable(values_group, "Each parameter group values must be provided as an iterable")
             for values_group in groups_values
         ]
-        normalized_param_names = cast(List[List[str]], param_names)
+        normalized_param_names = cast(list[list[str]], param_names)
         normalized_param_values = [
             [
                 _to_list_iterable(parameter_values, "Each parameter values entry must be an iterable")
@@ -370,13 +374,14 @@ def _format_input(
     return normalized_param_names, normalized_param_values
 
 
-def _reshape_channel_result(channel_values: List[Any], n_values: List[int]) -> np.ndarray:
+def _reshape_channel_result(channel_values: list[Any], n_values: list[int]) -> np.ndarray:
     array_result = np.array(channel_values)
     if array_result.ndim == 0:
         raise ValueError("Could not reshape scalar output")
 
     target_shape = tuple(n_values) + tuple(array_result.shape[1:])
-    return array_result.reshape(target_shape)
+    reshaped: np.ndarray = array_result.reshape(target_shape)
+    return reshaped
 
 
 def _convert_result_to_lists(result: Any) -> Any:
@@ -389,7 +394,7 @@ def _convert_result_to_lists(result: Any) -> Any:
 
 def parameterrun(
     fun: Callable[..., Any],
-    param_names: Union[str, List[str], List[List[str]]],
+    param_names: Union[str, list[str], list[list[str]]],
     param_values: Union[Iterable[Any], Iterable[Iterable[Any]], Iterable[Iterable[Iterable[Any]]]],
     n_workers: Optional[int] = -1,
     pbar_bool: bool = True,
@@ -399,8 +404,8 @@ def parameterrun(
     result_as_array: bool = True,
     backend: Optional[str] = None,
     desc: Optional[str] = None,
-    **fun_kwargs,
-) -> Union[list, np.ndarray, None]:  # noqa: E501
+    **fun_kwargs: Any,
+) -> Union[list[Any], np.ndarray, None]:
     """
     Run a function with multiple parameters in parallel. To indentify the parameters of interest, user must provide its
     name as is written in the function definition. If more parameters should be pass to the function, they can be
@@ -504,7 +509,7 @@ def parameterrun(
         desc = auto_desc
 
     # Execute the parallel run
-    result: List[List[Any]]
+    result: list[list[Any]]
 
     if backend == "joblib":
         _log("Running under joblib", verbose)
@@ -545,7 +550,7 @@ def parameterrun(
         raise ValueError("Unknown backend")
 
     if rank == 0:
-        final_result: Union[List[List[Any]], np.ndarray, List[np.ndarray]] = result
+        final_result: Union[list[list[Any]], np.ndarray, list[np.ndarray]] = result
 
         # Reshape the result to get the (hyper)matrix
         if reshape:

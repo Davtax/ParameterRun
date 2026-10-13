@@ -16,7 +16,7 @@ def _collect_assignments(total: int, workers: int, seed: int) -> list[list[int]]
         (7, 10, 555),
     ],
 )
-def test_local_values_form_exact_cover_without_overlap(total: int, workers: int, seed: int):
+def test_local_values_form_exact_cover_without_overlap(total: int, workers: int, seed: int) -> None:
     assignments = _collect_assignments(total, workers, seed)
     merged = [v for rank_values in assignments for v in rank_values]
 
@@ -26,7 +26,7 @@ def test_local_values_form_exact_cover_without_overlap(total: int, workers: int,
 
 
 @pytest.mark.parametrize(("total", "workers"), [(20, 4), (21, 4), (7, 10)])
-def test_local_values_are_balanced(total: int, workers: int):
+def test_local_values_are_balanced(total: int, workers: int) -> None:
     assignments = _collect_assignments(total, workers, seed=42)
     counts = [len(v) for v in assignments]
 
@@ -35,13 +35,13 @@ def test_local_values_are_balanced(total: int, workers: int):
 
 
 @pytest.mark.parametrize(("total", "workers", "seed"), [(100, 6, 123), (17, 5, 999)])
-def test_local_values_are_deterministic_for_fixed_seed(total: int, workers: int, seed: int):
+def test_local_values_are_deterministic_for_fixed_seed(total: int, workers: int, seed: int) -> None:
     first = _collect_assignments(total, workers, seed)
     second = _collect_assignments(total, workers, seed)
     assert first == second
 
 
-def test_local_values_change_for_different_seeds():
+def test_local_values_change_for_different_seeds() -> None:
     # Large enough case to make accidental equality effectively impossible.
     first = _collect_assignments(total=128, workers=8, seed=12345)
     second = _collect_assignments(total=128, workers=8, seed=54321)
@@ -49,15 +49,14 @@ def test_local_values_change_for_different_seeds():
 
 
 @pytest.mark.parametrize(("total", "workers"), [(0, 4), (-5, 4)])
-def test_local_values_empty_for_non_positive_total(total: int, workers: int):
+def test_local_values_empty_for_non_positive_total(total: int, workers: int) -> None:
     assignments = _collect_assignments(total, workers, seed=1)
     assert assignments == [[] for _ in range(workers)]
 
 
 @pytest.mark.parametrize(("total", "seed"), [(2, 1), (5, 12), (64, 77), (100, 98765)])
-def test_permute_in_range_is_bijection_on_domain(total: int, seed: int):
+def test_permute_in_range_is_bijection_on_domain(total: int, seed: int) -> None:
     permuted = [_permute_in_range(x, total=total, key=seed) for x in range(total)]
 
     assert all(0 <= x < total for x in permuted)
     assert len(set(permuted)) == total
-

@@ -17,10 +17,9 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple
 
 
-def parse_version(version_str: str) -> Tuple[int, int, int]:
+def parse_version(version_str: str) -> tuple[int, int, int]:
     """Parse semantic version string into (major, minor, patch)."""
     parts = version_str.split(".")
     if len(parts) != 3:
@@ -68,11 +67,7 @@ def get_current_version(init_file: Path) -> str:
 def update_init_file(init_file: Path, new_version: str) -> None:
     """Update version in __init__.py."""
     content = init_file.read_text()
-    updated = re.sub(
-        r'__version__\s*=\s*"[^"]+"',
-        f'__version__ = "{new_version}"',
-        content
-    )
+    updated = re.sub(r'__version__\s*=\s*"[^"]+"', f'__version__ = "{new_version}"', content)
     init_file.write_text(updated)
     print(f"✓ Updated {init_file.relative_to(init_file.parent.parent.parent)}")
 
@@ -91,11 +86,7 @@ def update_changelog(changelog_file: Path, new_version: str) -> None:
 """
 
     # Replace [Unreleased] section with new version and restore [Unreleased]
-    updated = re.sub(
-        r"## \[Unreleased\]",
-        f"{new_entry}## [Unreleased]",
-        content
-    )
+    updated = re.sub(r"## \[Unreleased\]", f"{new_entry}## [Unreleased]", content)
 
     # If no changes were made, insert new version after the header
     if updated == content:
@@ -156,4 +147,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -123,8 +123,11 @@ def _parameterrun_mpi(
     verbose: Optional[bool] = False,
     pbar_leave: Optional[bool] = True,
     seed: Optional[int] = None,
-    **fun_kwargs: Any,
+    fun_kwargs: Optional[dict[str, Any]] = None,
 ) -> tuple[list[list[Any]], int]:  # pragma: no cover
+    # fun_kwargs is an explicit dict (not **kwargs) so user kwargs such as `seed` cannot collide with our parameters
+    fun_kwargs = fun_kwargs or {}
+
     from mpi4py import MPI
 
     comm = MPI.COMM_WORLD
@@ -135,9 +138,9 @@ def _parameterrun_mpi(
     indices = [list(range(n_value)) for n_value in n_values]
     n_total = prod(n_values)  # Compute the total number of iterations
 
-    # Broadcast seed to all workers to ensure deterministic shuffling
-    if rank == 0:
-        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]) if rank == 0 else None
+    # Broadcast seed to all workers to ensure deterministic shuffling. Root's seed wins, a random one if not provided
+    if rank == 0 and seed is None:
+        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0])
     seed = comm.bcast(seed, root=0)
     assert isinstance(seed, int)  # For type checker
     count = n_total // size + (1 if rank < (n_total % size) else 0)
@@ -212,11 +215,13 @@ def _parameterrun_mpi(
     if not result:  # For workers that did not compute anything
         result = [[] for _ in range(n_outputs)]
 
-    if not result_indices:  # For workers that did not compute anything
-        result_indices = []
-
-    # Gather indices and results from all workers
+    # Gather indices from all workers, and compute the sorting order once for all outputs
     indices_gathered = comm.gather(result_indices, root=0)
+    order: list[int] = []
+    if rank == 0:
+        assert indices_gathered is not None  # For type checker
+        indices_flat = [idx for sublist in indices_gathered for idx in sublist]
+        order = sorted(range(len(indices_flat)), key=indices_flat.__getitem__)
 
     results_gathered = []
     for i in range(n_outputs):
@@ -228,17 +233,10 @@ def _parameterrun_mpi(
 
         if rank == 0:
             assert result_gathered is not None  # For type checker
-            assert indices_gathered is not None  # For type checker
 
-            # Flatten the results and indices
-            result_gathered = [item for sublist in result_gathered for item in sublist]
-            indices_gathered = [idx for sublist in indices_gathered for idx in sublist]
-
-            # Sort results by original index
-            sorted_pairs = sorted(zip(indices_gathered, result_gathered), key=lambda x: x[0])
-            results_sorted = [item[1] for item in sorted_pairs]
-
-            results_gathered.append(results_sorted)
+            # Flatten the results and sort them by original index
+            result_flat = [item for sublist in result_gathered for item in sublist]
+            results_gathered.append([result_flat[j] for j in order])
 
         _log("Results reshaped", verbose and rank == 0, hostname=MPI.Get_processor_name())
 
@@ -550,7 +548,7 @@ def parameterrun(
             pbar_bool=pbar_bool,
             pbar_leave=pbar_leave,
             verbose=verbose,
-            **fun_kwargs,
+            fun_kwargs=fun_kwargs,
         )
 
     else:

@@ -5,7 +5,7 @@ import parameterrun.parallel_utils as pu
 
 
 @pytest.mark.mpi
-def test_parameterrun_mpi_numerical_equivalence_and_root_return():
+def test_parameterrun_mpi_numerical_equivalence_and_root_return() -> None:
     MPI = pytest.importorskip("mpi4py.MPI")
     comm = MPI.COMM_WORLD
 
@@ -15,11 +15,17 @@ def test_parameterrun_mpi_numerical_equivalence_and_root_return():
     xs = np.array([0.0, 1.0, 2.0])
     ys = np.array([10.0, 20.0])
 
-    def f(x, y, scale=1.0):
+    def f(x: float, y: float, scale: float = 1.0) -> float:
         return scale * (x + y)
 
-    result = pu.parameterrun(f, param_names=[["x"], ["y"]], param_values=[[xs], [ys]], scale=2.0, backend="mpi",
-                             pbar_bool=False, )
+    result = pu.parameterrun(
+        f,
+        param_names=[["x"], ["y"]],
+        param_values=[[xs], [ys]],
+        scale=2.0,
+        backend="mpi",
+        pbar_bool=False,
+    )
 
     expected = 2.0 * (xs[:, None] + ys[None, :])
 

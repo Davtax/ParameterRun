@@ -27,7 +27,7 @@
   margin: 1rem auto 2rem;
 }
 
-/* Header logo: dark tile on the light theme, light tile on the dark theme. */
+/* Header logo: single-colour mark, dark on the light theme, light on the dark theme. */
 [data-md-color-scheme="slate"] .md-header__button.md-logo img {
-  content: url("icon-app-tile-light.svg");
+  content: url("logo-mark-light.svg");
 }

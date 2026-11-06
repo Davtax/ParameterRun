@@ -11,8 +11,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 ### Changed
 
 - Documentation site: the home page shows the navigation sidebar, duplicate page titles are gone, and the header logo
-  switches to the light tile on the dark theme. The browser-tab icon is an SVG that adapts to light and dark browser
-  themes.
+  and the browser-tab icon use a single-colour version of the mark (dark on light themes, light on dark themes).
 - CI runs only on pull requests into `main`, not again after the merge. The README CI and coverage badges follow the
   pull-request runs.
 

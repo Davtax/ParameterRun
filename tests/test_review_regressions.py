@@ -296,6 +296,27 @@ _MPI_SCRIPT = textwrap.dedent("""
         result = _broadcast_result(comm, expected if rank == 0 else None, None)
         assert result.dtype == dtype
         np.testing.assert_array_equal(result, expected)
+    elif mode == "receiver_ready":
+        original_write = stores._ResultStore.write_channel
+        original_send = static._send_rows
+        marker = directory / "receiver_ready"
+        def delayed_write(self, *args, **kwargs):
+            original_write(self, *args, **kwargs)
+            if not marker.exists():
+                time.sleep(0.5)
+                marker.touch()
+        def checked_send(comm, tag, array):
+            assert marker.exists(), "worker sent before root was ready"
+            original_send(comm, tag, array)
+        stores._ResultStore.write_channel = delayed_write
+        static._send_rows = checked_send
+        def fun(x):
+            return np.full(5000, x, dtype=float), str(x), np.full(5000, x * 1j)
+        numbers, labels, complex_numbers = pu.parameterrun(fun, "x", range(20), **options)
+        for x in range(20):
+            np.testing.assert_array_equal(numbers[x], np.full(5000, x))
+            np.testing.assert_array_equal(complex_numbers[x], np.full(5000, x * 1j))
+        assert list(labels) == [str(x) for x in range(20)]
     elif mode == "large":
         stores._MAX_MESSAGE_BYTES = 1024
         def fun(x):
@@ -384,6 +405,7 @@ _MPI_SCRIPT = textwrap.dedent("""
         ("commit", "static", True, False),
         ("transfer", "static", False, True),
         ("late_sender", "static", False, False),
+        ("receiver_ready", "static", False, False),
         ("structured", "static", False, False),
         ("large", "static", False, False),
         ("large", "static", True, False),

@@ -22,6 +22,7 @@ from ._utils import _log
 
 # Tags of the result blocks sent to rank 0, one per output channel: _TAG_CHANNEL + c (tag 0 is the done signal)
 _TAG_CHANNEL = 100
+_TAG_TRANSFER_READY = 99  # Root has allocated storage and is ready to collect this worker's channels.
 
 
 def _shared_seed(comm: Any, seed: int | None) -> int:  # pragma: no cover
@@ -167,32 +168,35 @@ def _parameterrun_mpi(
     all_indices = comm.gather(local_indices, root=0)
     try:
         if rank != 0:
+            comm.recv(source=0, tag=_TAG_TRANSFER_READY)
             for c, spec in enumerate(specs):
-                if spec[0] == "array" and len(local_indices):
-                    _send_rows(comm, _TAG_CHANNEL + c, np.ascontiguousarray(local_channels[c], dtype=np.dtype(spec[2])))
-            del local_channels
-            for c, spec in enumerate(specs):
-                if spec[0] == "list":
+                if spec[0] == "array":
+                    if len(local_indices):
+                        _send_rows(
+                            comm, _TAG_CHANNEL + c, np.ascontiguousarray(local_channels[c], dtype=np.dtype(spec[2]))
+                        )
+                else:
                     _send_payload(comm, [outputs[c] for outputs in originals], dest=0, tag=_TAG_CHANNEL + c)
+            del local_channels
         else:
             assert store is not None and all_indices is not None
-            # Root's own points, then each rank's array channels block by block, then the list channels
+            # Root's own points, then one worker at a time, with the same channel order on both sides.
             for c, spec in enumerate(specs if len(local_indices) else []):  # Root may have no successful point
                 data = local_channels[c] if spec[0] == "array" else [outputs[c] for outputs in originals]
                 store.write_channel(c, local_indices.astype(np.intp), data)
             del local_channels, originals
             for source in range(1, size):
                 source_indices = np.asarray(all_indices[source], dtype=np.intp)
+                # Don't queue large rendezvous transfers from workers whose receives haven't been posted yet.
+                comm.send(True, dest=source, tag=_TAG_TRANSFER_READY)
                 for c, spec in enumerate(specs):
                     if spec[0] == "array":
                         for start, block in _recv_rows(comm, source, _TAG_CHANNEL + c, len(source_indices), spec):
                             store.write_channel(c, source_indices[start : start + len(block)], block)
-            for c, spec in enumerate(specs):
-                if spec[0] == "list":
-                    for source in range(1, size):
+                    else:
                         nbytes = comm.recv(source=source, tag=_TAG_CHANNEL + c)
                         data = _recv_payload(comm, nbytes, source, _TAG_CHANNEL + c)
-                        store.write_channel(c, np.asarray(all_indices[source], dtype=np.intp), data)
+                        store.write_channel(c, source_indices, data)
             for source_indices in all_indices:
                 store.mark_done(source_indices)
     except Exception as err:

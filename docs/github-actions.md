@@ -91,9 +91,11 @@ library thread (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`); t
 oversubscription so the eight-rank checks can run on smaller hosted runners. These are correctness checks, not
 performance benchmarks.
 
-The static backend synchronizes the end of bulk transfers before finalizing the result store. Subprocess regression
-coverage includes a delayed sender and root finalization failures; a watchdog dumps blocked MPI stacks before the
-outer test timeout if a job hangs.
+The static backend grants each worker permission before collecting its channels in order. This keeps large transfers
+from other workers out of MPI's unexpected-message queue while root is receiving a different worker. All ranks then
+synchronize before root finalizes the result store. Subprocess regression coverage includes a delayed receiver,
+interleaved array/list channels with large arrays, a delayed sender, and root finalization failures; a watchdog dumps
+blocked MPI stacks before the outer test timeout if a job hangs.
 
 ### Release ([release.yml](../.github/workflows/release.yml))
 

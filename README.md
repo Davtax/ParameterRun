@@ -264,6 +264,47 @@ data = np.load("sweep.npy")  # Same as result
   `RuntimeWarning`. String outputs are written as a NumPy string array.
 - The directory is checked before anything is computed.
 
+## Checkpoints for long runs
+
+`checkpoint` saves the finished points of a long run to a directory, so that a run killed by a crash, a node failure or
+the walltime limit can be resumed instead of restarted. Call `parameterrun` again with the same directory, e.g. in the
+next Slurm job, and only the missing points are computed:
+
+```python
+result = parameterrun(my_function, param_names=["x", "y"], param_values=[xs, ys], checkpoint="sweep_checkpoint",
+                      checkpoint_interval=1800, )  # Save every 30 minutes
+```
+
+- When to save: `checkpoint_every` (points, over all workers or ranks) and/or `checkpoint_interval` (seconds). Without
+  either, every 600 seconds.
+- A snapshot records which points are done, so it can be resumed with another backend, MPI schedule or number of
+  ranks.
+- The parameter names and values and the extra keyword arguments must be the same, otherwise a `ValueError` is
+  raised. The code of `fun` is checked too: its bytecode, constants, default values, closure variables, and the
+  functions of its own module that it calls. Changes in other modules or libraries cannot be detected. After a
+  harmless edit, `checkpoint_resume="force"` resumes anyway; `checkpoint_resume="restart"` discards the snapshot.
+- Static MPI schedule: the ranks work in rounds, and rank 0 saves at the end of each round. Fast ranks wait for the
+  slowest one at the end of every round, so don't save too often. Dynamic schedule: the manager saves without stopping
+  the workers.
+- With `on_error="raise"`, the joblib backend and the dynamic manager save the points finished so far before the
+  exception propagates (or the MPI job aborts). The static schedule keeps the last completed round.
+- Failed points (`on_error="nan"`) count as done, so a resumed run gives the same result as an uninterrupted one.
+- The snapshot is kept after success (calling `parameterrun` again returns the result at once), unless
+  `keep_checkpoint=False`.
+- Signals save at once: `SIGUSR1` saves and goes on, `SIGTERM` saves and then ends the run (the MPI job too), as the
+  signal would have. Slurm sends `SIGTERM` at the walltime limit, about 30 s before killing the job; to save earlier,
+  ask for a signal some minutes before the limit:
+
+  ```bash
+  #SBATCH --signal=USR1@600   # SIGUSR1 to every rank 10 minutes before the walltime limit
+  ```
+
+- With `result_file`, numeric outputs are not copied into the snapshot: they are already in the memory-mapped `.npy`
+  file, which is flushed at each save. Resuming then needs the same, untouched `result_file`.
+- Each save writes one new `chunk_*.npz` and then `manifest.json`, both atomically, so a job killed while saving keeps
+  the previous snapshot. Numeric outputs are stored as plain arrays, read without pickle. Only non-numeric outputs
+  (strings, dicts, ragged arrays, ...) are pickled: load such snapshots only from sources you trust.
+
 ## Progress bars and verbosity
 
 By default (`pbar_bool=None`), the progress bar is shown when the output is a terminal or a Jupyter notebook, and hidden
@@ -293,7 +334,9 @@ The progress-bar description is generated automatically from the function name a
 ```python
 parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=None, pbar_leave=True, verbose=False,
              reshape=True, result_as_array=True, backend=None, desc=None, shuffle_seed=None, on_error="raise",
-             mpi_schedule="auto", mpi_chunk_size=None, return_on="root", result_file=None, **kwargs, )
+             mpi_schedule="auto", mpi_chunk_size=None, return_on="root", result_file=None,
+             checkpoint=None, checkpoint_every=None, checkpoint_interval=None, checkpoint_resume="auto",
+             keep_checkpoint=True, **kwargs, )
 ```
 
 * `fun`: function to evaluate
@@ -314,6 +357,10 @@ parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=None, pbar_
 * `mpi_chunk_size`: dynamic MPI schedule only, points per chunk (`None`: guided chunks)
 * `return_on`: MPI ranks that get the result: `"root"` (default), `"all"` or `"none"` (needs `result_file`)
 * `result_file`: `.npy` path to write the result to (one file per output channel)
+* `checkpoint`: directory for snapshots; an existing snapshot of the same run is resumed
+* `checkpoint_every` / `checkpoint_interval`: save after this many points / seconds (default: every 600 s)
+* `checkpoint_resume`: `"auto"` (default; raises if the code of `fun` changed), `"force"` or `"restart"`
+* `keep_checkpoint`: keep the snapshot after success (default `True`)
 * `**kwargs`: extra fixed keyword arguments forwarded to `fun`. They cannot reuse the names of the parameters above.
 
 ## Input formats
@@ -356,7 +403,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-For MPI numerical-equivalence checks (Linux/OpenMPI, 4 ranks):
+For MPI numerical-equivalence checks (4 ranks; OpenMPI, MPICH or MS-MPI):
 
 ```bash
 uv sync --extra mpi

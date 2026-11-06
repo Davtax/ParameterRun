@@ -1,18 +1,22 @@
 """MPI backend, static schedule: each rank derives its share of the points from a seeded pseudo-random permutation."""
 
+import contextlib
 import sys
 from collections.abc import Callable, Iterator
 from math import prod
+from time import time
 from typing import Any
 
 import numpy as np
 from tqdm.auto import tqdm
 
+from . import _store
+from ._checkpoint import _SaveSignals
 from ._errors import _abort_on_error, _all_points_failed_error, _evaluate_point, _FailedPoint
 from ._inputs import _get_iteration, _params_at, _product_element_from_index
 from ._progress import _pbar_options
 from ._pseudo_random import local_values
-from ._store import Channel, ChannelSpec, _channel_spec, _ResultStore, _rows_per_block
+from ._store import Channel, ChannelSpec, Payload, _channel_spec, _ChunkBuffer, _ResultStore, _rows_per_block
 from ._utils import _log
 
 # Tags of the result blocks sent to rank 0, one per output channel: _TAG_CHANNEL + c (tag 0 is the done signal)
@@ -79,9 +83,6 @@ def _parameterrun_mpi(
     # Output goes through the MPI launcher, which forwards it line by line
     pbar_options = _pbar_options(pbar_bool and rank == 0, sys.stdout, forwarded=True)
     pbar = tqdm(groups_compute, desc=desc, leave=pbar_leave, total=count, **pbar_options)
-
-    # Lazy import: _mpi_dynamic imports _shared_seed from this module
-    from ._mpi_dynamic import _ChunkBuffer
 
     buffer = _ChunkBuffer()  # This rank's results, split into output channels
     local_error: str | None = None  # Inconsistent outputs on this rank: reported to every rank after the loop
@@ -252,3 +253,208 @@ def _recv_rows(
         block = np.empty((min(step, n_rows - start), *output_shape), dtype=dtype)
         comm.Recv([block.reshape(-1).view(np.uint8), MPI.BYTE], source=source, tag=tag)
         yield start, block
+
+
+# Messages of the checkpointed static schedule (rounds), worker -> rank 0
+_TAG_ROUND_PART = 21  # A Payload of this round
+_TAG_ROUND_END = 22  # (this rank has no work left, error message or None): the last message of the round
+
+
+def _share_remaining(comm: Any, checkpoint: Any, n_total: int) -> np.ndarray | None:  # pragma: no cover
+    """
+    Flat indices still to compute, identical on every rank: None if nothing was resumed (all points), otherwise
+    rank 0's done mask is broadcast as bits. Collective: every rank calls it, ``checkpoint`` is only given on rank 0.
+    """
+    packed = None
+    if comm.Get_rank() == 0 and checkpoint is not None and checkpoint.n_resumed:
+        packed = np.packbits(checkpoint.store.done)
+    packed = comm.bcast(packed, root=0)
+    if packed is None:
+        return None
+    return np.flatnonzero(~np.unpackbits(packed, count=n_total).astype(bool))
+
+
+def _round_is_over(n_round: int, round_start: float, every: int | None, interval: float | None) -> bool:
+    return (every is not None and n_round >= every) or (interval is not None and time() - round_start >= interval)
+
+
+def _parameterrun_mpi_rounds(
+    fun: Callable[..., Any],
+    param_names: list[list[str]],
+    param_values: list[list[list[Any]]],
+    desc: str | None,
+    checkpoint: Any,
+    checkpoint_every: int | None,
+    checkpoint_interval: float | None,
+    pbar_bool: bool = True,
+    verbose: bool | None = False,
+    pbar_leave: bool | None = True,
+    seed: int | None = None,
+    fun_kwargs: dict[str, Any] | None = None,
+    on_error: str = "raise",
+) -> tuple[list[Channel], int]:  # pragma: no cover
+    """
+    Static schedule with checkpoints: the same pseudo-random split of the points as ``_parameterrun_mpi``, computed in
+    synchronised rounds. A round ends on every rank after ``checkpoint_every / size`` points, or ``checkpoint_interval``
+    seconds (each rank's own clock, from the common start of the round); then every rank sends its results of the
+    round to rank 0, which saves them, and rank 0 tells every rank whether to go on. Fast ranks wait for the slowest at
+    the end of each round: the price of a static schedule with snapshots.
+
+    ``checkpoint`` (a ``_Checkpoint``) is only given on rank 0. When resuming, only the points it does not hold are
+    split among the ranks, so the number of ranks may differ from the interrupted run.
+    """
+    fun_kwargs = fun_kwargs or {}
+
+    from mpi4py import MPI
+
+    # A private communicator per call: messages of a call that failed half-way can never reach a later call
+    comm = MPI.COMM_WORLD.Dup()
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    hostname = MPI.Get_processor_name()
+
+    n_values = [len(group[0]) for group in param_values]
+    axes = [list(range(n_value)) for n_value in n_values]
+    n_total = prod(n_values)
+
+    seed = _shared_seed(comm, seed)
+    remaining = _share_remaining(comm, checkpoint, n_total)
+    n_left = n_total if remaining is None else len(remaining)
+    count = n_left // size + (1 if rank < (n_left % size) else 0)
+    if rank == 0 and remaining is not None:
+        _log(f"Resuming from checkpoint: {n_total - n_left} of {n_total} points done", verbose, hostname=hostname)
+
+    def points() -> Iterator[int]:
+        for position in local_values(n_left, size, rank, seed):
+            yield int(position) if remaining is None else int(remaining[position])
+
+    todo = points()
+    every = None if checkpoint_every is None else -(-checkpoint_every // size)  # Points per rank and round
+    pbar_options = _pbar_options(pbar_bool and rank == 0, sys.stdout, forwarded=True)
+    pbar = tqdm(total=count, desc=desc, leave=pbar_leave, **pbar_options)
+
+    buffer = _ChunkBuffer()
+    exhausted = False
+    local_error: str | None = None
+    result: tuple[list[Channel], int] = ([], 0)
+
+    # SIGUSR1: save at the end of this round; SIGTERM: save, then every rank terminates
+    signals = checkpoint.signals if checkpoint is not None else _SaveSignals()
+    with signals:
+        while True:
+            pending: list[Payload] = []  # This rank's results of the round
+            n_round = 0
+            round_start = time()
+            while not (
+                exhausted
+                or local_error
+                or signals.save  # SIGUSR1 or SIGTERM: end the round now, so rank 0 saves
+                or _round_is_over(n_round, round_start, every, checkpoint_interval)
+            ):
+                index = next(todo, None)
+                if index is None:
+                    exhausted = True
+                    break
+                params = _get_iteration(_product_element_from_index(axes, index), param_names, param_values)
+                try:
+                    value = _evaluate_point(fun, params, fun_kwargs, on_error)
+                except Exception as err:  # Only with on_error="raise"
+                    if checkpoint is not None:  # Rank 0 can at least keep its own points of this round
+                        with contextlib.suppress(Exception):
+                            for payload in [*pending, buffer.payload()]:
+                                checkpoint.add(payload)
+                        checkpoint.commit_quietly()
+                    if size == 1:
+                        raise
+                    _abort_on_error(comm, err)
+                try:
+                    buffer.add(index, value, params)
+                except ValueError as err:
+                    local_error = str(err)
+                    break
+                n_round += 1
+                pbar.update(1)
+                if buffer.nbytes >= _store._MAX_MESSAGE_BYTES:  # Keep each message far below the 2 GB pickle limit
+                    pending.append(buffer.payload())
+                    buffer.clear()
+            if len(buffer):
+                pending.append(buffer.payload())
+                buffer.clear()
+            state = (exhausted or local_error is not None, local_error, signals.stop)
+            signals.save = False
+
+            decision: tuple[Any, ...]
+            if rank != 0:
+                for payload in pending:
+                    comm.send(payload, dest=0, tag=_TAG_ROUND_PART)
+                comm.send(state, dest=0, tag=_TAG_ROUND_END)
+                del pending
+                decision = comm.bcast(None, root=0)
+            else:
+                decision = _collect_round(comm, checkpoint, pending, state)
+                del pending
+                if decision[0] != "error" and checkpoint.commit():
+                    _log(f"Checkpoint saved: {checkpoint.n_saved} of {n_total} points", verbose, hostname=hostname)
+                if decision[0] == "stop":
+                    try:
+                        result = checkpoint.store.finalize(param_names, param_values)
+                    except RuntimeError as err:  # Every point failed
+                        decision = ("error", "RuntimeError", str(err))
+                comm.bcast(decision, root=0)
+
+            if decision[0] == "error":  # Every rank knows it, so every rank raises
+                pbar.close()
+                comm.Free()
+                raise (RuntimeError if decision[1] == "RuntimeError" else ValueError)(decision[2])
+            if decision[0] == "terminate":  # SIGTERM on some rank, and the round is saved: every rank ends
+                pbar.close()
+                comm.Free()
+                signals.terminate()
+            if decision[0] == "stop":
+                break
+
+    pbar.close()
+    _log(f"Rank {rank} finished", verbose, hostname=hostname)
+    comm.Free()
+    return result
+
+
+def _collect_round(
+    comm: Any, checkpoint: Any, own: list[Payload], own_state: tuple[bool, str | None, bool]
+) -> tuple[Any, ...]:  # pragma: no cover
+    """
+    Rank 0: put every rank's results of the round into the checkpoint, and decide ``("continue",)``, ``("stop",)``
+    (no rank has work left), ``("terminate",)`` (a rank got SIGTERM) or ``("error", exception name, message)``.
+    Always receives every message of the round, even after an error, so nothing is left in flight.
+    """
+    from mpi4py import MPI
+
+    status = MPI.Status()
+    states = [own_state]
+    store_error: str | None = None
+
+    def absorb(payload: Payload) -> None:
+        nonlocal store_error
+        if store_error is None:
+            try:
+                checkpoint.add(payload)
+            except ValueError as err:  # Different numbers of outputs on different ranks
+                store_error = str(err)
+
+    for payload in own:
+        absorb(payload)
+    for source in range(1, comm.Get_size()):
+        while True:
+            message = comm.recv(source=source, tag=MPI.ANY_TAG, status=status)
+            if status.Get_tag() == _TAG_ROUND_END:
+                states.append(message)
+                break
+            absorb(message)
+
+    errors = [error for _, error, _ in states if error] + ([store_error] if store_error else [])
+    if errors:
+        checkpoint.commit_quietly()  # The points stored before the error are consistent
+        return ("error", "ValueError", errors[0])
+    if all(finished for finished, _, _ in states):
+        return ("stop",)
+    return ("terminate",) if any(stop for _, _, stop in states) else ("continue",)

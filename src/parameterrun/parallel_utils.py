@@ -11,12 +11,13 @@ from typing import Any, Literal
 
 import numpy as np
 
+from ._checkpoint import CheckpointResume, _check_checkpoint_options, _Checkpoint, _save_triggers
 from ._delivery import _RETURN_ON, _broadcast_result, _check_result_file, _write_result_files
 from ._errors import _ON_ERROR_MODES, _fill_failed_points
 from ._inputs import _format_input, _validate_function_arguments
-from ._joblib_backend import _parameterrun_joblib
+from ._joblib_backend import _parameterrun_joblib, _parameterrun_joblib_checkpointed
 from ._mpi_dynamic import _parameterrun_mpi_dynamic
-from ._mpi_static import _parameterrun_mpi
+from ._mpi_static import _parameterrun_mpi, _parameterrun_mpi_rounds
 from ._progress import _resolve_pbar_bool
 from ._results import _as_flat_lists, _convert_result_to_lists, _reshape_channel_result, _warn_none_outputs
 from ._utils import _callable_name, _log, _mpi_world_size_from_env, _normalized_time
@@ -54,6 +55,11 @@ def parameterrun(
     mpi_chunk_size: int | None = None,
     return_on: Literal["root", "all", "none"] = "root",
     result_file: str | os.PathLike[str] | None = None,
+    checkpoint: str | os.PathLike[str] | None = None,
+    checkpoint_every: int | None = None,
+    checkpoint_interval: float | None = None,
+    checkpoint_resume: CheckpointResume = "auto",
+    keep_checkpoint: bool = True,
     **fun_kwargs: Any,
 ) -> list[Any] | np.ndarray | None:
     """
@@ -143,11 +149,39 @@ def parameterrun(
         (copy-on-write: changing them never changes the file). Under joblib, the files are written at the end. Outputs
         that cannot form one array without Python objects (e.g. ragged arrays, None) are not written, with a
         RuntimeWarning.
+    checkpoint: str or path, optional (default=None)
+        Directory for snapshots of a long run. The finished points are saved there regularly (by rank 0), and calling
+        `parameterrun` again with the same directory resumes from the last snapshot: only the missing points are
+        computed. A snapshot records which points are done, so it can be resumed with another backend, MPI schedule or
+        number of ranks. The parameter names and values and `fun_kwargs` must be the same, otherwise a ValueError is
+        raised. Failed points (`on_error="nan"`) count as done. With the static MPI schedule, the ranks work in rounds
+        between snapshots, and fast ranks wait for the slowest one at the end of each round; the dynamic schedule
+        saves without stopping the workers. Under joblib, and on the dynamic manager, the points finished before `fun`
+        raised are saved before the exception propagates. SIGUSR1 saves at once and goes on (e.g. with Slurm's
+        `--signal=USR1@600`); SIGTERM saves at once, then ends the run (the whole MPI job) as the signal would have.
+        Numeric outputs are stored without pickle, and outputs that live in the memory-mapped `result_file` are not
+        copied into the snapshot (resuming then needs the same `result_file`). Non-numeric outputs are pickled: load
+        snapshots only from sources you trust.
+    checkpoint_every: int, optional (default=None)
+        Save after this many points (over all workers or ranks).
+    checkpoint_interval: float, optional (default=None)
+        Save after this many seconds. If neither `checkpoint_every` nor `checkpoint_interval` is given, the run is
+        saved every 600 seconds. With both, whichever comes first.
+    checkpoint_resume: "auto", "force" or "restart", optional (default="auto")
+        - "auto": resume if `checkpoint` holds a snapshot of the same run. Raise a ValueError if the code of `fun`
+          changed since: its bytecode, constants, default values, closure variables, and the functions of its own
+          module that it calls. Changes in other modules or libraries cannot be detected.
+        - "force": resume even if the code of `fun` changed, with a RuntimeWarning (e.g. after a harmless edit).
+        - "restart": discard the snapshot and start over.
+    keep_checkpoint: bool, optional (default=True)
+        Keep the snapshot after a successful run (calling `parameterrun` again then returns the result at once). If
+        False, it is deleted once the result is ready.
     fun_kwargs :
         Additional parameters to pass to the function. They cannot use the names of the parameters of
         `parameterrun` itself (`fun`, `param_names`, `param_values`, `n_workers`, `pbar_bool`, `pbar_leave`,
         `verbose`, `reshape`, `result_as_array`, `backend`, `desc`, `shuffle_seed`, `on_error`, `mpi_schedule`,
-        `mpi_chunk_size`, `return_on`, `result_file`). Any other name, including `seed`, is passed to the function.
+        `mpi_chunk_size`, `return_on`, `result_file`, `checkpoint`, `checkpoint_every`, `checkpoint_interval`,
+        `checkpoint_resume`, `keep_checkpoint`). Any other name, including `seed`, is passed to the function.
 
     Returns
     -------
@@ -174,6 +208,7 @@ def parameterrun(
         raise ValueError('return_on="none" needs a result_file, otherwise the result would be lost')
     if result_file is not None and not Path(result_file).suffix == ".npy":
         raise ValueError(f"result_file must end in .npy, got {str(result_file)!r}")
+    _check_checkpoint_options(checkpoint_every, checkpoint_interval, checkpoint_resume)
 
     formatted_param_names, formatted_param_values = _format_input(param_names, param_values)
     _validate_function_arguments(fun, formatted_param_names, fun_kwargs)
@@ -229,6 +264,32 @@ def parameterrun(
         if problem is not None:
             raise ValueError(problem)
 
+    # Open the checkpoint on rank 0 (resuming from it if it holds this run). Every rank raises if that fails
+    snapshot: _Checkpoint | None = None
+    if checkpoint is not None:
+        open_error: Exception | None = None
+        if rank == 0:
+            try:
+                snapshot = _Checkpoint.open(
+                    checkpoint,
+                    fun,
+                    formatted_param_names,
+                    formatted_param_values,
+                    fun_kwargs,
+                    result_file=result_file,
+                    every=checkpoint_every,
+                    interval=checkpoint_interval,
+                    resume=checkpoint_resume,
+                )
+            except (ValueError, OSError) as err:
+                open_error = err
+        if backend == "mpi" and size > 1:
+            message = comm.bcast(None if open_error is None else str(open_error), root=0)
+            if message is not None and open_error is None:
+                raise ValueError(message)
+        if open_error is not None:
+            raise open_error
+
     # tqdm writes to stderr under joblib, and the MPI backend writes to stdout
     pbar_bool = _resolve_pbar_bool(pbar_bool, sys.stdout if backend == "mpi" else sys.stderr)
 
@@ -247,20 +308,34 @@ def parameterrun(
     if backend == "joblib":
         _log("Running under joblib", verbose)
 
-        indices = [list(range(n_value)) for n_value in n_values]
-        indices_iterate = product(*indices)
-        result, n_outputs = _parameterrun_joblib(
-            fun,
-            formatted_param_names,
-            formatted_param_values,
-            indices_iterate,
-            desc,
-            n_workers=n_workers,
-            pbar_bool=pbar_bool,
-            pbar_leave=pbar_leave,
-            on_error=on_error,
-            **fun_kwargs,
-        )
+        if snapshot is not None:
+            result, n_outputs = _parameterrun_joblib_checkpointed(
+                fun,
+                formatted_param_names,
+                formatted_param_values,
+                desc,
+                snapshot,
+                n_workers=n_workers,
+                pbar_bool=pbar_bool,
+                pbar_leave=pbar_leave,
+                on_error=on_error,
+                verbose=verbose,
+                fun_kwargs=fun_kwargs,
+            )
+        else:
+            indices = [list(range(n_value)) for n_value in n_values]
+            result, n_outputs = _parameterrun_joblib(
+                fun,
+                formatted_param_names,
+                formatted_param_values,
+                product(*indices),
+                desc,
+                n_workers=n_workers,
+                pbar_bool=pbar_bool,
+                pbar_leave=pbar_leave,
+                on_error=on_error,
+                **fun_kwargs,
+            )
 
     elif backend == "mpi":
         schedule = _resolve_mpi_schedule(mpi_schedule, size)
@@ -270,22 +345,40 @@ def parameterrun(
             hostname=mpi_module.Get_processor_name() if mpi_module is not None else None,
         )
 
-        mpi_backend = _parameterrun_mpi_dynamic if schedule == "dynamic" else _parameterrun_mpi
-        extra: dict[str, Any] = {"chunk_size": mpi_chunk_size} if schedule == "dynamic" else {}
-        result, n_outputs = mpi_backend(
-            fun,
-            formatted_param_names,
-            formatted_param_values,
-            desc,
-            pbar_bool=pbar_bool,
-            pbar_leave=pbar_leave,
-            verbose=verbose,
-            seed=shuffle_seed,
-            fun_kwargs=fun_kwargs,
-            on_error=on_error,
-            result_file=result_file,
-            **extra,
-        )
+        common: dict[str, Any] = {
+            "pbar_bool": pbar_bool,
+            "pbar_leave": pbar_leave,
+            "verbose": verbose,
+            "seed": shuffle_seed,
+            "fun_kwargs": fun_kwargs,
+            "on_error": on_error,
+        }
+        if schedule == "dynamic":
+            result, n_outputs = _parameterrun_mpi_dynamic(
+                fun,
+                formatted_param_names,
+                formatted_param_values,
+                desc,
+                chunk_size=mpi_chunk_size,
+                result_file=result_file,
+                checkpoint=snapshot,
+                checkpointed=checkpoint is not None,
+                **common,
+            )
+        elif checkpoint is not None:  # Static schedule in rounds. Every rank knows; only rank 0 holds the snapshot
+            result, n_outputs = _parameterrun_mpi_rounds(
+                fun,
+                formatted_param_names,
+                formatted_param_values,
+                desc,
+                snapshot,
+                *_save_triggers(checkpoint_every, checkpoint_interval),
+                **common,
+            )
+        else:
+            result, n_outputs = _parameterrun_mpi(
+                fun, formatted_param_names, formatted_param_values, desc, result_file=result_file, **common
+            )
 
     else:
         raise ValueError("Unknown backend")
@@ -301,6 +394,9 @@ def parameterrun(
             if not (return_on == "all" and size > 1):
                 raise
             root_error = err  # Re-raised by _broadcast_result, after telling the other ranks
+        else:
+            if snapshot is not None and not keep_checkpoint:
+                snapshot.remove()
 
         _log(f"Total time: {_normalized_time(time() - time_start)}", verbose)
 

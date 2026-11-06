@@ -1,6 +1,9 @@
 # Checkpointing / snapshots for long runs — design notes
 
-Status: **proposal**, nothing implemented yet.
+Status: **implemented** (see `src/parameterrun/_checkpoint.py`). The implementation differs from this proposal in one
+key point: a snapshot stores the *set* of finished flat indices (replayed into a `_ResultStore`), not a prefix of the
+permutation, so no `offset`/seed bookkeeping is needed and any backend, schedule or rank count can resume it. Static MPI
+uses synchronised rounds; the dynamic manager saves without a barrier. The rest of this file is the original proposal.
 
 ## Goal
 

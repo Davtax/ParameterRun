@@ -28,10 +28,19 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   MPI, numeric outputs go into a memory-mapped file while the points arrive, so the result is no longer limited by
   rank 0's memory.
 
+- Checkpoints for long runs: `checkpoint` (a directory), `checkpoint_every` (points), `checkpoint_interval` (seconds,
+  600 by default), `checkpoint_resume` (`"auto"`, `"force"`, `"restart"`) and `keep_checkpoint`. The finished points
+  are saved regularly, and calling `parameterrun` again with the same directory computes only the missing points, with
+  any backend, MPI schedule or number of ranks. Resuming checks the parameters, the extra keyword arguments and the code
+  of `fun` (bytecode, constants, defaults, closures, and helper functions of its module). The static MPI schedule
+  works in synchronised rounds between saves; the dynamic schedule saves without stopping the workers. `SIGUSR1`
+  saves at once (e.g. Slurm's `--signal=USR1@600`); `SIGTERM` saves, then ends the run. Snapshots are `.npz` files:
+  numeric outputs are stored without pickle, and outputs already in a memory-mapped `result_file` are not copied.
+
 ### Changed
 
-- `on_error`, `mpi_schedule`, `mpi_chunk_size`, `return_on` and `result_file` are now parameters of `parameterrun`
-  itself, so keyword arguments with these names are no longer forwarded to `fun`.
+- `on_error`, `mpi_schedule`, `mpi_chunk_size`, `return_on`, `result_file` and the `checkpoint*` options are now
+  parameters of `parameterrun` itself, so keyword arguments with these names are no longer forwarded to `fun`.
 - MPI, static schedule: results are no longer gathered as one pickled message per output channel. Numeric outputs are
   sent as raw bytes in blocks of at most 64 MiB straight into preallocated arrays on rank 0. This removes the 2 GB
   limit of pickled messages (`MPI_ERR_ARG` on large results) and most of rank 0's extra copies; non-numeric outputs

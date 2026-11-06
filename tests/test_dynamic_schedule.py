@@ -15,10 +15,10 @@ import pytest
 import parameterrun.parallel_utils as pu
 from parameterrun._errors import _evaluate_point, _FailedPoint
 from parameterrun._inputs import _get_iteration, _product_element_from_index
-from parameterrun._mpi_dynamic import _ChunkBuffer, _guided_chunk_size
+from parameterrun._mpi_dynamic import _guided_chunk_size
 from parameterrun._pseudo_random import _permute_in_range
 from parameterrun._results import _as_flat_lists
-from parameterrun._store import _MAX_MESSAGE_BYTES, _ResultStore, _stack_channel
+from parameterrun._store import _MAX_MESSAGE_BYTES, _ChunkBuffer, _ResultStore, _stack_channel
 
 
 def _failure(message: str = "boom") -> _FailedPoint:

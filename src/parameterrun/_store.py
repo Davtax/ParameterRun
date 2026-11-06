@@ -10,13 +10,13 @@ With a ``result_file``, array channels live in ``.npy`` files (``np.lib.format.o
 size of the result is not limited by rank 0's memory. ``finalize`` reopens them copy-on-write: the returned arrays read
 from the file, and changing them in memory never changes the file.
 
-``write`` is append-only by flat index and ``done`` marks the completed points, which is what checkpointing will build
-on.
+``write`` is append-only by flat index and ``done`` marks the completed points; ``_checkpoint`` saves the written
+payloads and replays them into a new store to resume.
 """
 
 import contextlib
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,55 @@ def _stack_channel(values: list[Any]) -> Channel:
     if array.dtype.kind in _NUMERIC_KINDS and array.ndim >= 1 and len(array) == len(values):
         return array
     return values
+
+
+# Rough size of a non-array output, only used to decide when to send early
+_OBJECT_NBYTES = 64
+
+# One block of results: successful flat indices, their channels, and the failed points
+Payload = tuple[np.ndarray, list[Channel], list[tuple[int, _FailedPoint]]]
+
+
+class _ChunkBuffer:
+    """Worker-side results of the current chunk, split into output channels before sending."""
+
+    def __init__(self) -> None:
+        self.n_outputs: int | None = None  # Fixed by the first successful point of this worker
+        self.clear()
+
+    def clear(self) -> None:
+        self.indices: list[int] = []
+        self.values: list[tuple[Any, ...]] = []
+        self.failures: list[tuple[int, _FailedPoint]] = []
+        self.nbytes = 0
+
+    def __len__(self) -> int:
+        return len(self.indices) + len(self.failures)
+
+    def add(self, index: int, value: Any, params: dict[str, Any]) -> None:
+        if isinstance(value, _FailedPoint):
+            self.failures.append((index, value))
+            self.nbytes += len(value.traceback)
+            return
+
+        outputs = value if isinstance(value, tuple) else (value,)
+        if self.n_outputs is None:
+            self.n_outputs = len(outputs)
+        elif len(outputs) != self.n_outputs:
+            raise ValueError(
+                f"fun returned {len(outputs)} outputs at {params}, but {self.n_outputs} at an earlier point. Return "
+                f"the same number of outputs (a tuple of the same length) for every point."
+            )
+        self.indices.append(index)
+        self.values.append(outputs)
+        self.nbytes += sum(output.nbytes if isinstance(output, np.ndarray) else _OBJECT_NBYTES for output in outputs)
+
+    def payload(self) -> Payload:
+        channels: list[Channel] = []
+        if self.values:
+            assert self.n_outputs is not None  # For type checker
+            channels = [_stack_channel([outputs[c] for outputs in self.values]) for c in range(self.n_outputs)]
+        return np.asarray(self.indices, dtype=np.int64), channels, self.failures
 
 
 def _channel_spec(data: Channel) -> ChannelSpec:
@@ -93,13 +142,21 @@ class _ResultStore:
 
     # ------------------------------------------------------------------ writing
 
-    def allocate(self, specs: Sequence[ChannelSpec]) -> None:
-        """Allocate the channels explicitly (the static backend knows them before any data arrives)."""
+    def allocate(self, specs: Sequence[ChannelSpec], existing: Mapping[int, np.ndarray] | None = None) -> None:
+        """
+        Allocate the channels explicitly (the static backend knows them before any data arrives). ``existing`` maps a
+        channel to an array of shape ``(n_total, *output_shape)`` already memory-mapped from its ``result_file``
+        (a resumed checkpoint), which is used instead of a new file.
+        """
         paths = _channel_paths(self.result_file, len(specs)) if self.result_file is not None else []
+        existing = existing or {}
         self._channels = []
         self._paths = []
         for c, spec in enumerate(specs):
-            if spec[0] == "array":
+            if c in existing:
+                self._channels.append(existing[c])
+                self._paths.append(paths[c])
+            elif spec[0] == "array":
                 path = paths[c] if paths else None
                 self._channels.append(self._new_array(tuple(spec[1]), np.dtype(spec[2]), path))
                 self._paths.append(path if isinstance(self._channels[c], np.memmap) else None)
@@ -107,14 +164,17 @@ class _ResultStore:
                 self._channels.append([None] * self.n_total)
                 self._paths.append(None)
 
-    def write(self, indices: Sequence[int] | np.ndarray, channels: Sequence[Channel]) -> None:
-        """Store the successful points ``indices``; ``channels[c][j]`` is output ``c`` of point ``indices[j]``."""
+    def write(self, indices: Sequence[int] | np.ndarray, channels: Sequence[Channel | None]) -> None:
+        """
+        Store the successful points ``indices``; ``channels[c][j]`` is output ``c`` of point ``indices[j]``. A channel
+        given as None is not written (a resumed checkpoint whose data is already in the channel's file).
+        """
         flat = np.asarray(indices, dtype=np.intp)
         if len(flat) == 0:
             return
 
         if self._channels is None:
-            self.allocate([_channel_spec(data) for data in channels])
+            self.allocate([_channel_spec(data) if data is not None else ("list",) for data in channels])
         elif len(channels) != len(self._channels):
             raise ValueError(
                 f"fun returned {len(channels)} outputs for some points but {len(self._channels)} for others. Return "
@@ -122,7 +182,8 @@ class _ResultStore:
             )
 
         for c, data in enumerate(channels):
-            self.write_channel(c, flat, data)
+            if data is not None:
+                self.write_channel(c, flat, data)
         self.mark_done(flat)
 
     def write_channel(self, c: int, indices: np.ndarray, data: Channel) -> None:
@@ -165,6 +226,46 @@ class _ResultStore:
         for index in np.asarray(indices, dtype=np.intp).tolist():
             self.failures[index] = failure
             self.done[index] = True
+
+    # ------------------------------------------------------------------ checkpoints
+
+    def mapped(self) -> list[bool]:
+        """Whether each channel lives in its ``result_file`` (a memory-mapped array)."""
+        return [path is not None for path in self._paths]
+
+    def specs(self) -> list[ChannelSpec]:
+        """Current kind, output shape and dtype of each channel."""
+        specs: list[ChannelSpec] = []
+        for channel in self._channels or []:
+            if isinstance(channel, np.ndarray):
+                specs.append(("array", list(channel.shape[1:]), channel.dtype.str))
+            else:
+                specs.append(("list",))
+        return specs
+
+    def flush(self) -> None:
+        """Write the memory-mapped channels to disk (before a checkpoint says their points are saved)."""
+        for c, path in enumerate(self._paths):
+            if path is not None:
+                array = self._array(c)
+                if isinstance(array, np.memmap):
+                    array.flush()
+
+    def full_payload(self) -> tuple[np.ndarray, list[Channel | None], list[tuple[int, _FailedPoint]]]:
+        """Every finished point as one payload; memory-mapped channels are None (their file holds them)."""
+        successful = self.done.copy()
+        successful[list(self.failures)] = False
+        indices = np.flatnonzero(successful)
+        channels: list[Channel | None] = []
+        for c, channel in enumerate(self._channels or []):
+            if self._paths[c] is not None:
+                channels.append(None)
+            elif isinstance(channel, np.ndarray):
+                channels.append(channel[indices])
+            else:
+                assert channel is not None  # For type checker
+                channels.append([channel[i] for i in indices.tolist()])
+        return indices, channels, sorted(self.failures.items())
 
     # ------------------------------------------------------------------ finishing
 

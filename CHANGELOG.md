@@ -4,10 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-06
 
 ### Added
 
+- `shuffle_seed` parameter: seeds the permutation that distributes points among MPI ranks, making the distribution
+  reproducible. It was accepted by the MPI backend but never passed through. A keyword argument named `seed` is still
+  forwarded to the user function.
+- `reshape="strict"` raises a `ValueError` when the result cannot be reshaped to the parameter grid.
+- `RuntimeWarning` when some points return `None`, with the count and the parameters of the first one.
+- `RuntimeWarning` when `backend="joblib"` with a negative `n_workers` runs inside an MPI job with more than one rank
+  (every rank would start a full-node pool).
 - `on_error` parameter (`"raise"` by default, or `"nan"`) for exceptions raised by `fun`.
   - `"raise"`: the exception keeps its type and gets the parameter values of the failing point as a note. Under MPI,
     the failing rank prints the traceback once and calls `comm.Abort(1)`, instead of leaving the other ranks waiting
@@ -27,7 +34,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `result_file` parameter: writes the result, reshaped to the grid, to a `.npy` file (one per output channel). Under
   MPI, numeric outputs go into a memory-mapped file while the points arrive, so the result is no longer limited by
   rank 0's memory.
-
 - Checkpoints for long runs: `checkpoint` (a directory), `checkpoint_every` (points), `checkpoint_interval` (seconds,
   600 by default), `checkpoint_resume` (`"auto"`, `"force"`, `"restart"`) and `keep_checkpoint`. The finished points
   are saved regularly, and calling `parameterrun` again with the same directory computes only the missing points, with
@@ -48,21 +54,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - MPI: every call uses its own duplicated communicator, so messages of one call can never reach another.
 - MPI runs with 8 ranks or more now use the dynamic schedule by default, which leaves rank 0 to the manager. Pass
   `mpi_schedule="static"` for the previous behaviour.
-
-## [0.5.0] - 2026-11-06
-
-### Added
-
-- `shuffle_seed` parameter: seeds the permutation that distributes points among MPI ranks, making the distribution
-  reproducible. It was accepted by the MPI backend but never passed through. A keyword argument named `seed` is still
-  forwarded to the user function.
-- `reshape="strict"` raises a `ValueError` when the result cannot be reshaped to the parameter grid.
-- `RuntimeWarning` when some points return `None`, with the count and the parameters of the first one.
-- `RuntimeWarning` when `backend="joblib"` with a negative `n_workers` runs inside an MPI job with more than one rank
-  (every rank would start a full-node pool).
-
-### Changed
-
 - **Breaking:** dropped support for Python 3.9 and 3.10; `parameterrun` now requires Python >= 3.11.
 - Added support for Python 3.13, 3.14 and 3.15 (classifiers and CI test matrix).
 - A failed reshape now emits a `RuntimeWarning` that explains why, instead of printing "Could not reshape the result".

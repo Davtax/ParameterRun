@@ -224,3 +224,6 @@ HPC_test/
 
 # Ferry ignore patterns
 .ferryignore
+
+# Affinity lock files
+*.af~lock~

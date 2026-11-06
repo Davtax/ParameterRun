@@ -10,8 +10,8 @@
   <a href="https://github.com/Davtax/ParameterRun/releases"><img src="https://img.shields.io/github/v/release/Davtax/ParameterRun" alt="GitHub release"></a>
   <a href="https://pepy.tech/project/parameterrun"><img src="https://static.pepy.tech/badge/parameterrun/month" alt="Downloads"></a>
   <a href="https://pypi.org/project/parameterrun/"><img src="https://img.shields.io/pypi/pyversions/parameterrun" alt="Python versions"></a>
-  <a href="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml"><img src="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://codecov.io/gh/Davtax/ParameterRun"><img src="https://codecov.io/gh/Davtax/ParameterRun/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml"><img src="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="CI"></a>
+  <a href="https://codecov.io/gh/Davtax/ParameterRun/tree/dev"><img src="https://codecov.io/gh/Davtax/ParameterRun/branch/dev/graph/badge.svg" alt="Coverage"></a>
   <a href="https://github.com/Davtax/ParameterRun/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/parameterrun" alt="License"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <a href="https://mypy-lang.org/"><img src="https://www.mypy-lang.org/static/mypy_badge.svg" alt="Checked with mypy"></a>

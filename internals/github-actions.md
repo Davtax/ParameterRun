@@ -8,7 +8,7 @@ Docs publishes the documentation site in parallel:
 
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
-| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main`, `push` to `main` | Tests, lint and type check on 15 OS/Python combinations (coverage uploaded to Codecov from one), plus MPI tests on Linux, macOS and Windows |
+| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main` | Tests, lint and type check on 15 OS/Python combinations (coverage uploaded to Codecov from one), plus MPI tests on Linux, macOS and Windows |
 | Release | [release.yml](../.github/workflows/release.yml) | `push` to `main` (i.e. a merged PR) | Reads `__version__`, checks that the tag is new and that `CHANGELOG.md` has a matching entry, then creates the GitHub release and tag `vX.Y.Z` |
 | Publish | [publish.yml](../.github/workflows/publish.yml) | `workflow_run`: Release completed | If Release succeeded: builds the sdist and wheel, checks them, and uploads them to PyPI |
 | Docs | [docs.yml](../.github/workflows/docs.yml) | `pull_request` into `main`, `push` to `main`, `workflow_dispatch` | Builds the site with Zensical (`zensical build --strict`); on pull requests only as a check, otherwise also deploys it to GitHub Pages |
@@ -24,8 +24,8 @@ flowchart TD
     work(["Work on dev / feature branches"]) -->|"open a PR into main"| pr
     work -->|"open a PR into main"| dbuild
 
-    subgraph CI["ci.yml: on pull_request into main or push to main"]
-        pr{{"pull_request or push event"}}
+    subgraph CI["ci.yml: on pull_request into main"]
+        pr{{"pull_request event"}}
         matrix["job: test (15 runs, fail-fast off)<br/>os: ubuntu, macos, windows<br/>python: 3.11, 3.12, 3.13, 3.14, 3.15"]
         msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy<br/>ubuntu + py3.12 only: upload coverage.xml to Codecov"]
         mpi["job: test-mpi (7 runs, fail-fast off)<br/>Python 3.12<br/>ubuntu: Open MPI + MPICH + Intel MPI<br/>macos: Open MPI + MPICH<br/>windows: Microsoft MPI + Intel MPI"]
@@ -138,9 +138,9 @@ check. Otherwise it uploads `site/` with `actions/upload-pages-artifact`, and th
 
 ## What this means in practice
 
-- **CI runs on pull requests into `main` and again on the push to `main` after a merge**, in parallel with Release
-  (this run feeds the Codecov and CI badges for `main`). Pushes to `dev` or feature branches are not tested by GitHub
-  Actions.
+- **CI runs only on pull requests into `main`**, not again after the merge. The README badges follow the PR runs: the
+  CI badge filters on `event=pull_request`, and the Codecov badge shows the `dev` branch, which PR uploads are filed
+  under. Pushes to `dev` or feature branches are not tested by GitHub Actions.
 - **Every merge into `main` is a release.** If `__version__` was not bumped, Release fails at step 2 and nothing is
   published. If the `CHANGELOG.md` section is missing, it fails at step 3. Before merging: run
   `python scripts/bump_version.py …` and move the `[Unreleased]` entries under `## [X.Y.Z] - date`.

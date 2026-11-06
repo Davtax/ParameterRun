@@ -6,6 +6,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** dropped support for Python 3.9 and 3.10; `parameterrun` now requires Python >= 3.11.
+- Added support for Python 3.13, 3.14 and 3.15 (classifiers and CI test matrix).
+
 ## [0.4.1] - 2026-04-21
 
 ### Fixed

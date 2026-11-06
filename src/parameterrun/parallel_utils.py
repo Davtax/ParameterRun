@@ -1,12 +1,12 @@
 import contextlib
 import inspect
 import sys
-from collections.abc import Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from datetime import datetime
 from itertools import product
 from math import prod
 from time import time
-from typing import Any, Callable, Optional, Union, cast
+from typing import Any, cast
 
 import joblib
 import numpy as np
@@ -38,7 +38,7 @@ def _callable_name(fun: Callable[..., Any]) -> str:
     return getattr(fun, "__name__", repr(fun))
 
 
-def _log(message: str, verbose: Optional[bool] = False, hostname: Optional[str] = None) -> None:
+def _log(message: str, verbose: bool | None = False, hostname: str | None = None) -> None:
     if verbose:
         # Compute timestamp
         time_stamp = datetime.now().strftime("%H:%M:%S, %d/%m/%Y")
@@ -72,10 +72,10 @@ def _parameterrun_joblib(
     param_names: list[list[str]],
     param_values: list[list[list[Any]]],
     indices_iterate: Iterable[tuple[int, ...]],
-    desc: Optional[str],
-    n_workers: Optional[int] = -1,
+    desc: str | None,
+    n_workers: int | None = -1,
     pbar_bool: bool = True,
-    pbar_leave: Optional[bool] = True,
+    pbar_leave: bool | None = True,
     **fun_kwargs: Any,
 ) -> tuple[list[list[Any]], int]:
     n_values = [len(group[0]) for group in param_values]
@@ -111,19 +111,19 @@ def _product_element_from_index(lists: list[list[int]], k: int) -> list[int]:
     for i in range(len(lists) - 1, -1, -1):
         k, indices[i] = divmod(k, lengths[i])
 
-    return list(L[j] for L, j in zip(lists, indices))
+    return list(L[j] for L, j in zip(lists, indices, strict=True))
 
 
 def _parameterrun_mpi(
     fun: Callable[..., Any],
     param_names: list[list[str]],
     param_values: list[list[list[Any]]],
-    desc: Optional[str],
+    desc: str | None,
     pbar_bool: bool = True,
-    verbose: Optional[bool] = False,
-    pbar_leave: Optional[bool] = True,
-    seed: Optional[int] = None,
-    fun_kwargs: Optional[dict[str, Any]] = None,
+    verbose: bool | None = False,
+    pbar_leave: bool | None = True,
+    seed: int | None = None,
+    fun_kwargs: dict[str, Any] | None = None,
 ) -> tuple[list[list[Any]], int]:  # pragma: no cover
     # fun_kwargs is an explicit dict (not **kwargs) so user kwargs such as `seed` cannot collide with our parameters
     fun_kwargs = fun_kwargs or {}
@@ -303,7 +303,7 @@ def _validate_function_arguments(
 
 
 def _format_input(
-    param_names: Union[str, list[str], list[list[str]]], param_values: Any
+    param_names: str | list[str] | list[list[str]], param_values: Any
 ) -> tuple[list[list[str]], list[list[list[Any]]]]:
     # Check the depth of the parameters
 
@@ -362,7 +362,7 @@ def _format_input(
     if len(normalized_param_names) != len(normalized_param_values):
         raise ValueError("The number of groups of parameters must be the same as the number of groups of values")
 
-    for names_group, values_group in zip(normalized_param_names, normalized_param_values):
+    for names_group, values_group in zip(normalized_param_names, normalized_param_values, strict=True):
         if len(names_group) != len(values_group):
             raise ValueError("Each parameter group must include one values list per parameter")
 
@@ -399,18 +399,18 @@ def _convert_result_to_lists(result: Any) -> Any:
 
 def parameterrun(
     fun: Callable[..., Any],
-    param_names: Union[str, list[str], list[list[str]]],
-    param_values: Union[Iterable[Any], Iterable[Iterable[Any]], Iterable[Iterable[Iterable[Any]]]],
-    n_workers: Optional[int] = -1,
+    param_names: str | list[str] | list[list[str]],
+    param_values: Iterable[Any] | Iterable[Iterable[Any]] | Iterable[Iterable[Iterable[Any]]],
+    n_workers: int | None = -1,
     pbar_bool: bool = True,
     pbar_leave: bool = True,
-    verbose: Optional[bool] = False,
+    verbose: bool | None = False,
     reshape: bool = True,
     result_as_array: bool = True,
-    backend: Optional[str] = None,
-    desc: Optional[str] = None,
+    backend: str | None = None,
+    desc: str | None = None,
     **fun_kwargs: Any,
-) -> Union[list[Any], np.ndarray, None]:
+) -> list[Any] | np.ndarray | None:
     """
     Run a function with multiple parameters in parallel. To indentify the parameters of interest, user must provide its
     name as is written in the function definition. If more parameters should be pass to the function, they can be
@@ -555,7 +555,7 @@ def parameterrun(
         raise ValueError("Unknown backend")
 
     if rank == 0:
-        final_result: Union[list[list[Any]], np.ndarray, list[np.ndarray]] = result
+        final_result: list[list[Any]] | np.ndarray | list[np.ndarray] = result
 
         # Reshape the result to get the (hyper)matrix
         if reshape:

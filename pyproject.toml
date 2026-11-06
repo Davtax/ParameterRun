@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 authors = [
     { name = "David Fernández-Fernández", email = "david.fernandezf@hotmail.com" }
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 keywords = ["parallel", "parameter-sweep", "joblib", "mpi", "scientific-computing", "python"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,10 +20,11 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
@@ -73,14 +74,14 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 files = ["src", "tests", "examples", "scripts"]
 warn_unused_ignores = true
 warn_redundant_casts = true

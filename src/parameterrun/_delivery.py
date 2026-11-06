@@ -64,7 +64,7 @@ def _write_result_files(
 
 def _item_layout(item: Any) -> tuple[Any, ...]:
     if isinstance(item, np.ndarray) and not item.dtype.hasobject:
-        return ("array", item.shape, item.dtype.str)
+        return ("array", item.shape, item.dtype)
     return ("pickle",)
 
 

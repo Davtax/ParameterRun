@@ -14,6 +14,7 @@ from . import _store
 from ._checkpoint import _SaveSignals
 from ._errors import _abort_on_error, _all_points_failed_error, _evaluate_point, _FailedPoint
 from ._inputs import _get_iteration, _params_at, _product_element_from_index
+from ._mpi_transfer import _finish_store, _recv_payload, _send_payload
 from ._progress import _pbar_options
 from ._pseudo_random import local_values
 from ._store import Channel, ChannelSpec, Payload, _channel_spec, _ChunkBuffer, _ResultStore, _rows_per_block
@@ -54,7 +55,7 @@ def _parameterrun_mpi(
 
     Each rank stacks its results per channel. Rank 0 gathers a short summary of every rank (``_plan_gather``) and
     decides per channel: arrays travel as raw bytes in blocks of at most ``_MAX_MESSAGE_BYTES`` straight into the
-    store (no pickling, no 2 GB limit, one copy on rank 0); other outputs are gathered as pickled lists.
+    store (no pickling, no 2 GB limit, one copy on rank 0); other outputs use bounded serialized transfers.
     """
     # fun_kwargs is an explicit dict (not **kwargs) so user kwargs such as `seed` cannot collide with our parameters
     fun_kwargs = fun_kwargs or {}
@@ -100,6 +101,10 @@ def _parameterrun_mpi(
         except ValueError as err:
             local_error = str(err)
             break
+        except Exception as err:
+            if size > 1:
+                _abort_on_error(comm, err)
+            raise
 
     hostname = MPI.Get_processor_name()
     _log(f"Rank {rank} finished", verbose, hostname=hostname)
@@ -136,54 +141,71 @@ def _parameterrun_mpi(
         raise (RuntimeError if plan[1] == "RuntimeError" else ValueError)(plan[2])
 
     specs: list[ChannelSpec] = plan[1]
-    n_outputs = len(specs)
     if all(spec[0] == "array" for spec in specs):
         buffer.values = originals = []  # Not needed: free them before the transfer
     _log("Gathering results", verbose and rank == 0, hostname=hostname)
 
-    all_indices = comm.gather(local_indices, root=0)
-
-    if rank != 0:
-        for c, spec in enumerate(specs):
-            if spec[0] == "array" and len(local_indices):
-                _send_rows(comm, _TAG_CHANNEL + c, np.ascontiguousarray(local_channels[c], dtype=np.dtype(spec[2])))
-        del local_channels
-        for c, spec in enumerate(specs):
-            if spec[0] == "list":
-                comm.gather([outputs[c] for outputs in originals], root=0)
+    store = None
+    allocation_error = None
+    if rank == 0:
+        try:
+            store = _ResultStore(n_total, n_values, result_file)
+            store.allocate(specs)
+            assert summaries is not None
+            for item in summaries:
+                if item["first_failure"] is not None:
+                    store.add_failed_indices(item["failed_indices"], item["first_failure"][1])
+        except Exception as err:
+            allocation_error = err
+    message = comm.bcast(str(allocation_error) if allocation_error is not None else None, root=0)
+    if message is not None:
         comm.Free()
-        return [], n_outputs
+        if allocation_error is not None:
+            raise allocation_error
+        raise RuntimeError(f"parameterrun result allocation failed on rank 0: {message}")
 
-    assert summaries is not None and all_indices is not None  # For type checker
-    store = _ResultStore(n_total, n_values, result_file)
-    store.allocate(specs)
-    for item in summaries:
-        if item["first_failure"] is not None:
-            store.add_failed_indices(item["failed_indices"], item["first_failure"][1])
-
-    # Root's own points, then each rank's array channels block by block, then the list channels
-    for c, spec in enumerate(specs if len(local_indices) else []):  # Root may have no successful point
-        data = local_channels[c] if spec[0] == "array" else [outputs[c] for outputs in originals]
-        store.write_channel(c, local_indices.astype(np.intp), data)
-    del local_channels, originals
-    for source in range(1, size):
-        source_indices = np.asarray(all_indices[source], dtype=np.intp)
-        for c, spec in enumerate(specs):
-            if spec[0] == "array":
-                for start, block in _recv_rows(comm, source, _TAG_CHANNEL + c, len(source_indices), spec):
-                    store.write_channel(c, source_indices[start : start + len(block)], block)
-    for c, spec in enumerate(specs):
-        if spec[0] == "list":
-            gathered = comm.gather([], root=0)  # Root's own list was written above
-            assert gathered is not None  # For type checker
+    all_indices = comm.gather(local_indices, root=0)
+    try:
+        if rank != 0:
+            for c, spec in enumerate(specs):
+                if spec[0] == "array" and len(local_indices):
+                    _send_rows(comm, _TAG_CHANNEL + c, np.ascontiguousarray(local_channels[c], dtype=np.dtype(spec[2])))
+            del local_channels
+            for c, spec in enumerate(specs):
+                if spec[0] == "list":
+                    _send_payload(comm, [outputs[c] for outputs in originals], dest=0, tag=_TAG_CHANNEL + c)
+        else:
+            assert store is not None and all_indices is not None
+            # Root's own points, then each rank's array channels block by block, then the list channels
+            for c, spec in enumerate(specs if len(local_indices) else []):  # Root may have no successful point
+                data = local_channels[c] if spec[0] == "array" else [outputs[c] for outputs in originals]
+                store.write_channel(c, local_indices.astype(np.intp), data)
+            del local_channels, originals
             for source in range(1, size):
-                store.write_channel(c, np.asarray(all_indices[source], dtype=np.intp), gathered[source])
-    for source_indices in all_indices:
-        store.mark_done(source_indices)
+                source_indices = np.asarray(all_indices[source], dtype=np.intp)
+                for c, spec in enumerate(specs):
+                    if spec[0] == "array":
+                        for start, block in _recv_rows(comm, source, _TAG_CHANNEL + c, len(source_indices), spec):
+                            store.write_channel(c, source_indices[start : start + len(block)], block)
+            for c, spec in enumerate(specs):
+                if spec[0] == "list":
+                    for source in range(1, size):
+                        nbytes = comm.recv(source=source, tag=_TAG_CHANNEL + c)
+                        data = _recv_payload(comm, nbytes, source, _TAG_CHANNEL + c)
+                        store.write_channel(c, np.asarray(all_indices[source], dtype=np.intp), data)
+            for source_indices in all_indices:
+                store.mark_done(source_indices)
+    except Exception as err:
+        # Some ranks may already be inside a blocking transfer; a collective is no longer safe.
+        if size > 1:
+            _abort_on_error(comm, err)
+        raise
 
     _log("Results gathered", verbose, hostname=hostname)
-    comm.Free()
-    return store.finalize(param_names, param_values)
+    try:
+        return _finish_store(comm, store, param_names, param_values)
+    finally:
+        comm.Free()
 
 
 def _plan_gather(
@@ -372,6 +394,10 @@ def _parameterrun_mpi_rounds(
                 except ValueError as err:
                     local_error = str(err)
                     break
+                except Exception as err:
+                    if size > 1:
+                        _abort_on_error(comm, err)
+                    raise
                 n_round += 1
                 pbar.update(1)
                 if buffer.nbytes >= _store._MAX_MESSAGE_BYTES:  # Keep each message far below the 2 GB pickle limit
@@ -384,28 +410,41 @@ def _parameterrun_mpi_rounds(
             signals.save = False
 
             decision: tuple[Any, ...]
+            root_error: Exception | None = None
             if rank != 0:
-                for payload in pending:
-                    comm.send(payload, dest=0, tag=_TAG_ROUND_PART)
-                comm.send(state, dest=0, tag=_TAG_ROUND_END)
+                try:
+                    for payload in pending:
+                        _send_payload(comm, payload, dest=0, tag=_TAG_ROUND_PART)
+                    comm.send(state, dest=0, tag=_TAG_ROUND_END)
+                except Exception as err:
+                    _abort_on_error(comm, err)
+                    raise
                 del pending
                 decision = comm.bcast(None, root=0)
             else:
-                decision = _collect_round(comm, checkpoint, pending, state)
+                try:
+                    decision = _collect_round(comm, checkpoint, pending, state)
+                except Exception as err:  # A receive failed: senders may still be blocked mid-transfer
+                    if size > 1:
+                        _abort_on_error(comm, err)
+                    raise
                 del pending
-                if decision[0] != "error" and checkpoint.commit():
-                    _log(f"Checkpoint saved: {checkpoint.n_saved} of {n_total} points", verbose, hostname=hostname)
-                if decision[0] == "stop":
-                    try:
+                try:
+                    if decision[0] != "error" and checkpoint.commit():
+                        _log(f"Checkpoint saved: {checkpoint.n_saved} of {n_total} points", verbose, hostname=hostname)
+                    if decision[0] == "stop":
                         result = checkpoint.store.finalize(param_names, param_values)
-                    except RuntimeError as err:  # Every point failed
-                        decision = ("error", "RuntimeError", str(err))
+                except Exception as err:
+                    root_error = err
+                    decision = ("error", type(err).__name__, str(err))
                 comm.bcast(decision, root=0)
 
             if decision[0] == "error":  # Every rank knows it, so every rank raises
                 pbar.close()
                 comm.Free()
-                raise (RuntimeError if decision[1] == "RuntimeError" else ValueError)(decision[2])
+                if root_error is not None:
+                    raise root_error
+                raise (ValueError if decision[1] == "ValueError" else RuntimeError)(decision[2])
             if decision[0] == "terminate":  # SIGTERM on some rank, and the round is saved: every rank ends
                 pbar.close()
                 comm.Free()
@@ -431,15 +470,15 @@ def _collect_round(
 
     status = MPI.Status()
     states = [own_state]
-    store_error: str | None = None
+    store_error: Exception | None = None
 
     def absorb(payload: Payload) -> None:
         nonlocal store_error
         if store_error is None:
             try:
                 checkpoint.add(payload)
-            except ValueError as err:  # Different numbers of outputs on different ranks
-                store_error = str(err)
+            except Exception as err:  # Drain all senders even after a storage failure
+                store_error = err
 
     for payload in own:
         absorb(payload)
@@ -449,9 +488,12 @@ def _collect_round(
             if status.Get_tag() == _TAG_ROUND_END:
                 states.append(message)
                 break
-            absorb(message)
+            absorb(_recv_payload(comm, message, source, _TAG_ROUND_PART))
 
-    errors = [error for _, error, _ in states if error] + ([store_error] if store_error else [])
+    if store_error is not None:
+        checkpoint.commit_quietly()
+        return ("error", type(store_error).__name__, str(store_error))
+    errors = [error for _, error, _ in states if error]
     if errors:
         checkpoint.commit_quietly()  # The points stored before the error are consistent
         return ("error", "ValueError", errors[0])

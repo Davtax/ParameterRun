@@ -27,6 +27,7 @@ import inspect
 import json
 import os
 import pickle
+import re
 import signal
 import sys
 import threading
@@ -42,7 +43,6 @@ import numpy as np
 
 from ._errors import _FailedPoint
 from ._store import _NUMERIC_KINDS, Payload, _channel_paths, _ResultStore
-from ._utils import _callable_name
 
 _FORMAT_VERSION = 1
 _MANIFEST = "manifest.json"
@@ -82,7 +82,19 @@ def _const_part(const: Any) -> Any:
 
 def _code_object_part(code: types.CodeType) -> tuple[Any, ...]:
     """Bytecode, constants and names, without line numbers: moving a function or adding comments changes nothing."""
-    return (code.co_code, tuple(_const_part(const) for const in code.co_consts), code.co_names)
+    return (
+        code.co_code,
+        tuple(_const_part(const) for const in code.co_consts),
+        code.co_names,
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_flags,
+        code.co_exceptiontable,
+    )
 
 
 def _global_names(code: types.CodeType) -> set[str]:
@@ -141,25 +153,34 @@ def _source_digest(fun: Any) -> str | None:
 
 def _code_fingerprint(fun: Any) -> dict[str, Any]:
     """
-    Fingerprint of the code of ``fun``. Bytecode differs between Python versions, so the source text is kept as well,
-    to compare runs under different Python versions.
+    Fingerprint of ``fun``. Across Python versions source differences prove a change, but source equality alone
+    cannot validate bound state or helpers, so the comparison remains unverifiable.
     """
     return {
-        "name": _callable_name(fun),
+        "name": _stable_callable_name(fun),
         "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         "bytecode": _digest(_code_part(fun, set())),
         "source": _source_digest(fun),
     }
 
 
+def _stable_callable_name(fun: Any) -> str:
+    if isinstance(fun, functools.partial):
+        return f"partial({_stable_callable_name(fun.func)})"
+    return str(getattr(fun, "__name__", type(fun).__qualname__))
+
+
 def _code_matches(saved: dict[str, Any], current: dict[str, Any]) -> bool | None:
-    """True or False, or None when it cannot be told (another Python version and no source)."""
+    """True or False, or None when another Python version prevents complete validation."""
     if saved.get("name") != current["name"]:
         return False
     if saved.get("python") == current["python"]:
         return bool(saved.get("bytecode") == current["bytecode"])
     if saved.get("source") is not None and current["source"] is not None:
-        return bool(saved["source"] == current["source"])
+        if saved["source"] != current["source"]:
+            return False
+        # Source equality says nothing about defaults, closures, bound state or helper code.
+        # Bytecode cannot validate those across interpreter versions: report this as unverifiable.
     return None
 
 
@@ -205,9 +226,23 @@ def _read_manifest(directory: Path) -> dict[str, Any] | None:
 
 def _clear_directory(directory: Path) -> None:
     """Remove the files of a checkpoint (only those: the directory may hold other files of the user)."""
-    for path in [directory / _MANIFEST, *directory.glob(_CHUNK_PATTERN), *directory.glob("*.tmp")]:
+    for path in [
+        directory / _MANIFEST,
+        directory / f"{_MANIFEST}.tmp",
+        *_chunk_files(directory),
+        *_chunk_files(directory, temporary=True),
+    ]:
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
+
+
+def _chunk_files(directory: Path, *, temporary: bool = False) -> list[Path]:
+    suffix = ".tmp" if temporary else ""
+    return [
+        path
+        for path in directory.glob(f"{_CHUNK_PATTERN}{suffix}")
+        if re.fullmatch(r"chunk_[0-9]{6,}\.npz" + re.escape(suffix), path.name)
+    ]
 
 
 def _check_checkpoint_options(
@@ -410,7 +445,7 @@ class _Checkpoint:
         n_total = int(np.prod(n_values))
         run = _run_fingerprint(param_names, param_values, fun_kwargs)
         code = _code_fingerprint(fun)
-        store = _ResultStore(n_total, n_values, result_file)
+        store = _ResultStore(n_total, n_values, result_file, preserve_files=True)
 
         manifest = None if resume == "restart" else _read_manifest(directory)
         if manifest is None:
@@ -425,7 +460,7 @@ class _Checkpoint:
             _replay_chunks(directory, manifest["chunks"], store)
             # Chunks written after the last manifest (a crash in between) are not part of the snapshot
             listed = set(manifest["chunks"])
-            for stray in directory.glob(_CHUNK_PATTERN):
+            for stray in _chunk_files(directory):
                 if stray.name not in listed:
                     stray.unlink()
 
@@ -491,6 +526,7 @@ class _Checkpoint:
         }
         _write_manifest(self.directory, manifest)
         self.manifest = manifest
+        self.store.remove_retired_files()
         if compact:
             for old in old_chunks:
                 with contextlib.suppress(OSError):
@@ -587,7 +623,8 @@ def _check_same_run(
     if matches is None:
         warnings.warn(
             f"Resuming the checkpoint in {directory}, written under Python {manifest['code'].get('python')}: whether "
-            f"{code['name']} changed cannot be checked under Python {code['python']} (its source is not available).",
+            f"{code['name']} changed cannot be checked under Python {code['python']} "
+            "(source equality alone cannot validate captured state or helpers).",
             RuntimeWarning,
             stacklevel=4,
         )

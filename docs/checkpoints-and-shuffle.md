@@ -160,8 +160,9 @@ signal, whichever comes first. If neither option is given, it saves every 600 s.
 - **Run fingerprint:** `param_names`, `n_values`, and `joblib.hash` digests of `param_values` and `fun_kwargs`. Any
   difference raises `ValueError`.
 - **Code fingerprint of `fun`:** bytecode, constants, defaults, closures, and the helper functions of the same module
-  that `fun` calls. The source text is stored too, for comparing across Python versions. What happens on a mismatch
-  depends on `checkpoint_resume`:
+  that `fun` calls, plus argument bindings and execution metadata. Across Python minor versions, differing source
+  proves a change; otherwise compatibility is unverifiable and resuming warns, because matching source cannot
+  validate captured state or helpers. What happens on a mismatch depends on `checkpoint_resume`:
   - `"auto"` raises.
   - `"force"` warns and resumes.
   - `"restart"` discards the snapshot.

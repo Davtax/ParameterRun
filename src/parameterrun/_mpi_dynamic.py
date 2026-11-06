@@ -4,7 +4,7 @@ MPI backend, dynamic schedule: rank 0 is a manager that hands out chunks of poin
 Fast ranks simply ask for more work, so differences in speed between nodes and cores, and uneven task costs, no longer
 leave the whole job waiting for the slowest rank.
 
-Protocol (pickled point-to-point messages, all small):
+Protocol (small control messages and serialized payloads transferred in bounded blocks):
 
 * worker -> manager, ``_TAG_RESULT``: results of the last chunk (``None`` at start-up), and a request for more work.
 * worker -> manager, ``_TAG_PARTIAL``: part of a chunk's results, sent early when they exceed ``_MAX_MESSAGE_BYTES``.
@@ -33,6 +33,7 @@ from ._checkpoint import _SaveSignals
 from ._errors import _abort_header, _evaluate_point, _print_and_abort
 from ._inputs import _get_iteration, _product_element_from_index
 from ._mpi_static import _share_remaining, _shared_seed
+from ._mpi_transfer import _finish_store, _recv_payload, _send_payload
 from ._progress import _pbar_options
 from ._pseudo_random import _permute_in_range
 from ._store import Channel, _ChunkBuffer, _ResultStore
@@ -92,6 +93,7 @@ def _manager(
             payload = None
 
         if payload is not None:
+            payload = _recv_payload(comm, payload, source, tag)
             indices, channels, failures = payload
             if checkpoint is not None:
                 checkpoint.add(payload)
@@ -168,11 +170,11 @@ def _worker(
             # Send early, so messages stay far below the 2 GB limit of pickled MPI messages even for large chunks
             if buffer.nbytes >= _store._MAX_MESSAGE_BYTES:
                 n_computed += len(buffer)
-                comm.send(buffer.payload(), dest=0, tag=_TAG_PARTIAL)
+                _send_payload(comm, buffer.payload(), dest=0, tag=_TAG_PARTIAL)
                 buffer.clear()
 
         n_computed += len(buffer)
-        comm.send(buffer.payload(), dest=0, tag=_TAG_RESULT)
+        _send_payload(comm, buffer.payload(), dest=0, tag=_TAG_RESULT)
         buffer.clear()
 
 
@@ -259,13 +261,9 @@ def _parameterrun_mpi_dynamic(
         pbar.close()
 
         try:
-            result = store.finalize(param_names, param_values)
-        except RuntimeError as err:  # Every point failed: every rank raises
-            comm.bcast(str(err), root=0)
-            raise
-        comm.bcast(None, root=0)
-        comm.Free()
-        return result
+            return _finish_store(comm, store, param_names, param_values)
+        finally:
+            comm.Free()
 
     try:
         with _SaveSignals() if checkpointed else contextlib.nullcontext() as signals:
@@ -279,8 +277,7 @@ def _parameterrun_mpi_dynamic(
         raise
     _log(f"Rank {rank} finished ({n_computed} points)", verbose, hostname=hostname)
 
-    error = comm.bcast(None, root=0)
-    if error is not None:
-        raise RuntimeError(error)
-    comm.Free()
-    return [], 0
+    try:
+        return _finish_store(comm, None, param_names, param_values)
+    finally:
+        comm.Free()

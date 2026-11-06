@@ -472,9 +472,10 @@ def test_fingerprint_handles_recursion_partials_methods_and_builtins() -> None:
     assert _same(np.sin, np.cos) is False
 
 
-def test_fingerprint_across_python_versions_uses_the_source() -> None:
+def test_fingerprint_across_python_versions_reports_source_equality_as_unverifiable() -> None:
     saved = {**_code_fingerprint(flaky), "python": "2.7", "bytecode": "other"}
-    assert _code_matches(saved, _code_fingerprint(flaky))
+    assert _code_matches(saved, _code_fingerprint(flaky)) is None
+    assert _code_matches({**saved, "source": "changed"}, _code_fingerprint(flaky)) is False
     assert _code_matches({**saved, "source": None}, _code_fingerprint(flaky)) is None
 
 

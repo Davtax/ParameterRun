@@ -16,6 +16,7 @@ payloads and replays them into a new store to resume.
 
 import contextlib
 import os
+import pickle
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -54,8 +55,29 @@ def _stack_channel(values: list[Any]) -> Channel:
     return values
 
 
-# Rough size of a non-array output, only used to decide when to send early
+# Per-object/index framing allowance, added to the serialized size for early sends.
 _OBJECT_NBYTES = 64
+
+
+class _PickleSize:
+    """Count serialized bytes without keeping a second copy of a large output."""
+
+    def __init__(self) -> None:
+        self.nbytes = 0
+
+    def write(self, data: Any) -> int:
+        nbytes = memoryview(data).nbytes
+        self.nbytes += nbytes
+        return nbytes
+
+
+def _output_nbytes(output: Any) -> int:
+    if isinstance(output, np.ndarray) and not output.dtype.hasobject:
+        return output.nbytes + _OBJECT_NBYTES
+    counter = _PickleSize()
+    pickle.dump(output, counter, protocol=pickle.HIGHEST_PROTOCOL)
+    return counter.nbytes + _OBJECT_NBYTES
+
 
 # One block of results: successful flat indices, their channels, and the failed points
 Payload = tuple[np.ndarray, list[Channel], list[tuple[int, _FailedPoint]]]
@@ -80,7 +102,7 @@ class _ChunkBuffer:
     def add(self, index: int, value: Any, params: dict[str, Any]) -> None:
         if isinstance(value, _FailedPoint):
             self.failures.append((index, value))
-            self.nbytes += len(value.traceback)
+            self.nbytes += _output_nbytes(value)
             return
 
         outputs = value if isinstance(value, tuple) else (value,)
@@ -93,7 +115,7 @@ class _ChunkBuffer:
             )
         self.indices.append(index)
         self.values.append(outputs)
-        self.nbytes += sum(output.nbytes if isinstance(output, np.ndarray) else _OBJECT_NBYTES for output in outputs)
+        self.nbytes += sum(_output_nbytes(output) for output in outputs) + _OBJECT_NBYTES
 
     def payload(self) -> Payload:
         channels: list[Channel] = []
@@ -127,6 +149,8 @@ class _ResultStore:
         n_total: int,
         grid_shape: Sequence[int] | None = None,
         result_file: str | os.PathLike[str] | None = None,
+        *,
+        preserve_files: bool = False,
     ) -> None:
         self.n_total = n_total
         self.grid_shape = tuple(grid_shape) if grid_shape is not None else (n_total,)
@@ -135,6 +159,8 @@ class _ResultStore:
         self.failures: dict[int, _FailedPoint] = {}
         self._channels: list[Channel | None] | None = None  # Allocated on the first successful result
         self._paths: list[Path | None] = []  # File of each array channel that lives in a file
+        self._preserve_files = preserve_files
+        self._retired_paths: list[Path] = []
 
     @property
     def n_outputs(self) -> int:
@@ -349,8 +375,18 @@ class _ResultStore:
         path = self._paths[c]
         if path is not None:
             self._paths[c] = None
-            with contextlib.suppress(OSError):  # The file is incomplete now; parameterrun reports it was not written
+            if self._preserve_files:
+                self._retired_paths.append(path)
+            else:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+
+    def remove_retired_files(self) -> None:
+        """Only called after the replacement checkpoint manifest has committed."""
+        for path in self._retired_paths:
+            with contextlib.suppress(OSError):
                 path.unlink()
+        self._retired_paths.clear()
 
     def _fill_nan(self, c: int, failed: np.ndarray) -> None:
         assert self._channels is not None  # For type checker

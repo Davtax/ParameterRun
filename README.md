@@ -283,6 +283,8 @@ result = parameterrun(my_function, param_names=["x", "y"], param_values=[xs, ys]
   raised. The code of `fun` is checked too: its bytecode, constants, default values, closure variables, and the
   functions of its own module that it calls. Changes in other modules or libraries cannot be detected. After a
   harmless edit, `checkpoint_resume="force"` resumes anyway; `checkpoint_resume="restart"` discards the snapshot.
+  Across Python minor versions, matching source alone cannot validate captured state or helpers: resuming warns
+  that code compatibility could not be checked.
 - Static MPI schedule: the ranks work in rounds, and rank 0 saves at the end of each round. Fast ranks wait for the
   slowest one at the end of every round, so don't save too often. Dynamic schedule: the manager saves without stopping
   the workers.

@@ -81,7 +81,10 @@ def _nan_like(template: Any) -> Any:
     NaN with the shape of ``template``. Floating-point and complex outputs keep their dtype; integer and boolean outputs
     become float64. Non-numeric outputs get None.
     """
-    array = np.asarray(template)
+    try:
+        array = np.asarray(template)
+    except (ValueError, TypeError, OverflowError):
+        return None
     if array.dtype.kind not in "biufc":
         return None
     dtype = array.dtype if array.dtype.kind in "fc" else np.dtype(np.float64)

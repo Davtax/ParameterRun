@@ -165,6 +165,32 @@ def test_parameterrun_explicit_mpi_requires_mpi4py(monkeypatch: pytest.MonkeyPat
         )
 
 
+def _mpi4py_without_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    """mpi4py installed, but no MPI library: ``from mpi4py import MPI`` raises RuntimeError."""
+    import builtins
+
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "mpi4py":
+            raise RuntimeError("cannot load MPI library")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+
+def test_auto_backend_falls_back_to_joblib_without_mpi_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mpi4py_without_library(monkeypatch)
+    result = pu.parameterrun(lambda x: 2 * x, "x", [1, 2], n_workers=1, pbar_bool=False)
+    np.testing.assert_array_equal(np.asarray(result), [2, 4])
+
+
+def test_explicit_mpi_without_mpi_library_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mpi4py_without_library(monkeypatch)
+    with pytest.raises(ImportError, match="MPI library"):
+        pu.parameterrun(lambda x: x, "x", [1], n_workers=1, pbar_bool=False, backend="mpi")
+
+
 def test_parameterrun_invalid_backend() -> None:
     with pytest.raises(ValueError, match="Unknown backend"):
         pu.parameterrun(lambda x: x, "x", [1, 2], backend="bad", pbar_bool=False)

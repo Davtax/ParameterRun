@@ -389,9 +389,12 @@ def test_ignored_sigterm_stays_ignored() -> None:
 
 
 def test_interval_trigger(tmp_path: Path) -> None:
-    checkpoint = _Checkpoint.open(tmp_path, flaky, [["x"]], [[[1, 2]]], {}, interval=1e-9)
+    checkpoint = _Checkpoint.open(tmp_path, flaky, [["x"]], [[[1, 2]]], {}, interval=1.0)
     assert checkpoint.every is None
     checkpoint.add((np.array([0]), [np.array([1.0])], []))
+    assert not checkpoint.due()
+    # Move the last save back instead of sleeping: the Windows clock can return the same value twice
+    checkpoint._last_save -= 2.0
     assert checkpoint.due()
     assert checkpoint.commit()
     assert not checkpoint.commit()  # Nothing new

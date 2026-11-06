@@ -236,9 +236,12 @@ def parameterrun(
             comm = MPI.COMM_WORLD
             size = comm.Get_size()
             rank = comm.Get_rank()
-        except ImportError as err:
+        # RuntimeError: mpi4py is installed but finds no MPI library ("cannot load MPI library")
+        except (ImportError, RuntimeError) as err:
             if backend == "mpi":
-                raise ImportError('backend="mpi" requires mpi4py to be installed and available.') from err
+                raise ImportError(
+                    'backend="mpi" requires mpi4py and an MPI library to be installed and available.'
+                ) from err
 
         if size == 1 and backend is None:
             backend = "joblib"

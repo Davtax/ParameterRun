@@ -54,6 +54,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - MPI: every call uses its own duplicated communicator, so messages of one call can never reach another.
 - MPI runs with 8 ranks or more now use the dynamic schedule by default, which leaves rank 0 to the manager. Pass
   `mpi_schedule="static"` for the previous behaviour.
+- `backend=None` now falls back to joblib when `mpi4py` is installed but no MPI library is found, instead of failing
+  with `RuntimeError: cannot load MPI library`. `backend="mpi"` raises an `ImportError` that names the missing library.
 - **Breaking:** dropped support for Python 3.9 and 3.10; `parameterrun` now requires Python >= 3.11.
 - Added support for Python 3.13, 3.14 and 3.15 (classifiers and CI test matrix).
 - A failed reshape now emits a `RuntimeWarning` that explains why, instead of printing "Could not reshape the result".

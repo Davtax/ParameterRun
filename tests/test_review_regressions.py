@@ -19,7 +19,7 @@ import pytest
 import parameterrun._checkpoint as checkpoints
 import parameterrun.parallel_utils as pu
 from parameterrun._checkpoint import _Checkpoint, _code_fingerprint, _code_matches
-from parameterrun._delivery import _item_layout
+from parameterrun._delivery import _broadcast_item, _item_layout
 from parameterrun._errors import _nan_like
 from parameterrun._mpi_transfer import _recv_payload, _send_payload
 from parameterrun._store import _ChunkBuffer
@@ -245,6 +245,40 @@ def test_serialized_payloads_split_even_one_oversized_output(monkeypatch: pytest
     assert comm.received == len(comm.blocks)
 
 
+def test_array_broadcast_waits_for_received_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import parameterrun._store as stores
+
+    mpi4py = types.ModuleType("mpi4py")
+    mpi4py.__dict__["MPI"] = types.SimpleNamespace(BYTE=object())
+    monkeypatch.setitem(sys.modules, "mpi4py", mpi4py)
+    monkeypatch.setattr(stores, "_MAX_MESSAGE_BYTES", 64)
+    expected = np.arange(12, dtype=np.complex128).reshape(3, 4)
+    waited: list[bool] = []
+
+    class Receiver:
+        def __init__(self) -> None:
+            self.offset = 0
+
+        def Get_rank(self) -> int:
+            return 1
+
+        def Ibcast(self, buffer: Any, root: int) -> Any:
+            receiver = self
+
+            class Request:
+                def Wait(self) -> None:
+                    size = len(buffer[0])
+                    buffer[0][:] = expected.reshape(-1).view(np.uint8)[receiver.offset : receiver.offset + size]
+                    receiver.offset += size
+                    waited.append(True)
+
+            return Request()
+
+    actual = _broadcast_item(Receiver(), None, _item_layout(expected))
+    assert waited == [True, True, True]
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_subprocess_runner_does_not_import_mpi_in_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original_import = builtins.__import__
 
@@ -297,21 +331,6 @@ _MPI_SCRIPT = textwrap.dedent("""
         assert result.dtype == dtype
         np.testing.assert_array_equal(result, expected)
     elif mode == "receiver_ready":
-        original_broadcast = pu._broadcast_result
-        class TracedComm:
-            def __init__(self, wrapped):
-                self.wrapped = wrapped
-                self.sequence = 0
-            def __getattr__(self, name):
-                return getattr(self.wrapped, name)
-            def Bcast(self, buffer, root):
-                print(f"rank {rank}: Bcast {self.sequence} start, bytes={buffer[0].nbytes}", flush=True)
-                self.wrapped.Bcast(buffer, root=root)
-                print(f"rank {rank}: Bcast {self.sequence} end", flush=True)
-                self.sequence += 1
-        def traced_broadcast(comm, result, error):
-            return original_broadcast(TracedComm(comm), result, error)
-        pu._broadcast_result = traced_broadcast
         original_write = stores._ResultStore.write_channel
         original_send = static._send_rows
         marker = directory / "receiver_ready"

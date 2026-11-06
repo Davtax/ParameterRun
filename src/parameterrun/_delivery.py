@@ -70,9 +70,9 @@ def _item_layout(item: Any) -> tuple[Any, ...]:
 
 def _broadcast_result(comm: Any, result: Any, root_error: BaseException | None) -> Any:  # pragma: no cover
     """
-    Give every rank rank 0's final result. Numeric arrays travel as raw bytes with ``Bcast`` (in blocks of at most
-    ``_MAX_MESSAGE_BYTES``), after their shape and dtype; anything else is pickled. If rank 0 failed while finishing
-    the result, it re-raises and the other ranks raise a RuntimeError, instead of waiting forever.
+    Give every rank rank 0's final result. Numeric arrays travel as raw bytes with ``Ibcast``/``Wait``, in blocks of
+    at most ``_MAX_MESSAGE_BYTES``, after their shape and dtype; anything else is pickled. If rank 0 failed while
+    finishing the result, it re-raises and the other ranks raise a RuntimeError, instead of waiting forever.
     """
     rank = comm.Get_rank()
     layout: tuple[Any, ...] | None = None
@@ -113,5 +113,6 @@ def _broadcast_item(comm: Any, item: Any, layout: tuple[Any, ...]) -> Any:  # pr
     data = array.reshape(-1).view(np.uint8)
     step = _store._MAX_MESSAGE_BYTES
     for start in range(0, len(data), step):
-        comm.Bcast([data[start : start + step], MPI.BYTE], root=0)
+        # Use the nonblocking collective implementation and keep the buffer live until completion.
+        comm.Ibcast([data[start : start + step], MPI.BYTE], root=0).Wait()
     return item if comm.Get_rank() == 0 else array

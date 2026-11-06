@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -31,7 +33,16 @@ jobs:
         run: uv sync
 
       - name: Tests
-        run: uv run pytest -m "not mpi and not mpi_subprocess"
+        run: uv run pytest -m "not mpi and not mpi_subprocess" --cov-report=xml
+
+      # One upload is enough for the README badge; a missing token or Codecov outage must not fail CI
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Lint
         run: uv run ruff check .

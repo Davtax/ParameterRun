@@ -31,7 +31,7 @@ jobs:
         run: uv sync
 
       - name: Tests
-        run: uv run pytest -m "not mpi"
+        run: uv run pytest -m "not mpi and not mpi_subprocess"
 
       - name: Lint
         run: uv run ruff check .

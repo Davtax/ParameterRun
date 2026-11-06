@@ -24,7 +24,7 @@ flowchart TD
     subgraph CI["ci.yml: on pull_request into main"]
         pr{{"pull_request event"}}
         matrix["job: test (15 runs, fail-fast off)<br/>os: ubuntu, macos, windows<br/>python: 3.11, 3.12, 3.13, 3.14, 3.15"]
-        msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi' (coverage gate 70%)<br/>ruff check, mypy"]
+        msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy"]
         mpi["job: test-mpi-linux<br/>ubuntu, Python 3.12, OpenMPI"]
         mpisteps["uv sync --extra mpi<br/>mpiexec -n 4 pytest -m mpi<br/>pytest -m mpi_subprocess (starts its own mpiexec)"]
         pr --> matrix --> msteps
@@ -72,7 +72,7 @@ flowchart TD
 
 | Job | Runs on | Steps | Notes |
 | --- | --- | --- | --- |
-| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. |
+| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi-linux`. |
 | `test-mpi-linux` | ubuntu, Python 3.12 | `mpi4py/setup-mpi` (OpenMPI), `uv sync --extra mpi`, `mpiexec -n 4 … pytest -m mpi`, then `pytest -m mpi_subprocess` | The `mpi` tests need exactly 4 ranks. The `mpi_subprocess` tests start their own `mpiexec -n 4`, so they run outside `mpiexec`. |
 
 Permissions are read-only (`contents: read`).

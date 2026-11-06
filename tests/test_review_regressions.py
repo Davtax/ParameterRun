@@ -1,5 +1,6 @@
 """Regression coverage for checkpoint integrity and MPI failure/transfer protocols."""
 
+import builtins
 import functools
 import gc
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -205,9 +207,12 @@ def test_buffer_accounts_for_variable_length_serialized_outputs(output: Any) -> 
 
 
 def test_serialized_payloads_split_even_one_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("mpi4py.MPI")
     import parameterrun._store as stores
 
+    # The transport is simulated: loading a native MPI runtime is unnecessary here.
+    mpi4py = types.ModuleType("mpi4py")
+    mpi4py.__dict__["MPI"] = types.SimpleNamespace(BYTE=object())
+    monkeypatch.setitem(sys.modules, "mpi4py", mpi4py)
     monkeypatch.setattr(stores, "_MAX_MESSAGE_BYTES", 1024)
 
     class Transport:
@@ -238,6 +243,24 @@ def test_serialized_payloads_split_even_one_oversized_output(monkeypatch: pytest
     np.testing.assert_array_equal(restored[1][0], payload[1][0])
     assert restored[2] == payload[2]
     assert comm.received == len(comm.blocks)
+
+
+def test_subprocess_runner_does_not_import_mpi_in_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_import = builtins.__import__
+
+    def without_mpi(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "mpi4py" or name.startswith("mpi4py."):
+            raise AssertionError("The pytest parent must not initialize MPI")
+        return original_import(name, *args, **kwargs)
+
+    def completed(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args[0], 0, "ALL RANKS COMPLETED", "")
+
+    monkeypatch.setattr(builtins, "__import__", without_mpi)
+    monkeypatch.setattr(shutil, "which", lambda name: "mpiexec")
+    monkeypatch.setattr(sys.modules[__name__], "find_spec", lambda name: object())
+    monkeypatch.setattr(subprocess, "run", completed)
+    test_mpi_regressions_finish_without_hanging(tmp_path, "warning", "static", False, False)
 
 
 _MPI_SCRIPT = textwrap.dedent("""
@@ -353,9 +376,8 @@ def test_mpi_regressions_finish_without_hanging(
     tmp_path: Path, mode: str, schedule: str, checkpointed: bool, aborts: bool
 ) -> None:
     launcher = shutil.which("mpiexec")
-    if launcher is None:
-        pytest.skip("Needs an MPI launcher")
-    pytest.importorskip("mpi4py.MPI")
+    if launcher is None or find_spec("mpi4py") is None:
+        pytest.skip("Needs an MPI launcher and mpi4py")
     if _mpi_world_size_from_env() > 1:
         pytest.skip("Do not nest MPI jobs")
     script = tmp_path / "regression.py"

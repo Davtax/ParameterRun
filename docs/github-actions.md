@@ -25,7 +25,7 @@ flowchart TD
         pr{{"pull_request event"}}
         matrix["job: test (15 runs, fail-fast off)<br/>os: ubuntu, macos, windows<br/>python: 3.11, 3.12, 3.13, 3.14, 3.15"]
         msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy"]
-        mpi["job: test-mpi (7 runs, fail-fast off)<br/>Python 3.12<br/>ubuntu-24.04: Open MPI<br/>ubuntu-latest: MPICH + Intel MPI<br/>macos: Open MPI + MPICH<br/>windows: Microsoft MPI + Intel MPI"]
+        mpi["job: test-mpi (7 runs, fail-fast off)<br/>Python 3.12<br/>ubuntu: Open MPI + MPICH + Intel MPI<br/>macos: Open MPI + MPICH<br/>windows: Microsoft MPI + Intel MPI"]
         mpisteps["uv sync --extra mpi, verify native MPI runtime<br/>full MPI suite: 4 ranks<br/>scheduling and idle-worker tests: 8 ranks<br/>pytest -m mpi_subprocess (starts its own mpiexec)"]
         pr --> matrix --> msteps
         pr --> mpi --> mpisteps
@@ -73,7 +73,7 @@ flowchart TD
 | Job | Runs on | Steps | Notes |
 | --- | --- | --- | --- |
 | `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi`. |
-| `test-mpi` | Python 3.12; ubuntu-24.04 with Open MPI, ubuntu-latest with MPICH/Intel MPI, macos with Open MPI/MPICH, windows with Microsoft MPI/Intel MPI (7 runs) | `mpi4py/setup-mpi`, `uv sync --extra mpi`, verify the runtime vendor, full MPI suite with 4 ranks, `tests/test_mpi_rank_scaling.py` with 8 ranks, then `pytest -m mpi_subprocess` | `fail-fast: false`. Existing integration tests require 4 ranks; the scaling tests run at both 4 and 8 ranks. Subprocess tests launch their own four-rank jobs outside `mpiexec`. |
+| `test-mpi` | Python 3.12; ubuntu with Open MPI/MPICH/Intel MPI, macos with Open MPI/MPICH, windows with Microsoft MPI/Intel MPI (7 runs) | `mpi4py/setup-mpi`, `uv sync --extra mpi`, verify the runtime vendor, full MPI suite with 4 ranks, `tests/test_mpi_rank_scaling.py` with 8 ranks, then `pytest -m mpi_subprocess` | `fail-fast: false`. Existing integration tests require 4 ranks; the scaling tests run at both 4 and 8 ranks. Subprocess tests launch their own four-rank jobs outside `mpiexec`. |
 
 Permissions are read-only (`contents: read`).
 
@@ -82,11 +82,6 @@ check fails immediately if the native MPI library cannot be loaded or its vendor
 entry, preventing a preinstalled MPI library from silently replacing the intended runtime. Signal tests use
 platform-specific skips where needed: `SIGUSR1` coverage is skipped on Windows, while the existing
 `signal.raise_signal(SIGTERM)` checkpoint tests run on all three platforms.
-
-The Linux Open MPI job pins Ubuntu 24.04 and its distribution Open MPI 4.1.6 runtime. On Ubuntu 26.04 with Open MPI
-5.0.10, CI runs #22 and #23 stalled in large TCP sends/receives and broadcasts; the full suite remains enabled on the
-pinned runner. Ubuntu-latest remains covered by the non-MPI matrix and the Linux MPICH/Intel MPI jobs, and macOS
-continues to test its Homebrew Open MPI runtime.
 
 Four ranks select the automatic static schedule; eight ranks select the automatic dynamic schedule (one manager and
 seven compute workers). The scaling tests verify which ranks actually compute, completion with fewer points than

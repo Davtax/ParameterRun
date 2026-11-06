@@ -50,9 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 26.04's Open MPI 5.0.10 stalls on large TCP transfers/broadcasts in CI.
-          # Keep the complete suite on the stable 24.04 Open MPI runtime; other Linux jobs stay on latest.
-          - os: ubuntu-24.04
+          - os: ubuntu-latest
             mpi: openmpi
           - os: ubuntu-latest
             mpi: mpich

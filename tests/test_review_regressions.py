@@ -297,6 +297,21 @@ _MPI_SCRIPT = textwrap.dedent("""
         assert result.dtype == dtype
         np.testing.assert_array_equal(result, expected)
     elif mode == "receiver_ready":
+        original_broadcast = pu._broadcast_result
+        class TracedComm:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+                self.sequence = 0
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def Bcast(self, buffer, root):
+                print(f"rank {rank}: Bcast {self.sequence} start, bytes={buffer[0].nbytes}", flush=True)
+                self.wrapped.Bcast(buffer, root=root)
+                print(f"rank {rank}: Bcast {self.sequence} end", flush=True)
+                self.sequence += 1
+        def traced_broadcast(comm, result, error):
+            return original_broadcast(TracedComm(comm), result, error)
+        pu._broadcast_result = traced_broadcast
         original_write = stores._ResultStore.write_channel
         original_send = static._send_rows
         marker = directory / "receiver_ready"

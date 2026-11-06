@@ -264,16 +264,21 @@ def test_subprocess_runner_does_not_import_mpi_in_parent(tmp_path: Path, monkeyp
 
 
 _MPI_SCRIPT = textwrap.dedent("""
+    import faulthandler
     import sys
+    import time
     import warnings
     from pathlib import Path
     import numpy as np
     from mpi4py import MPI
     import parameterrun.parallel_utils as pu
     import parameterrun._store as stores
+    import parameterrun._mpi_static as static
     from parameterrun._checkpoint import _Checkpoint
     from parameterrun._delivery import _broadcast_result
 
+    # Dump the blocked MPI calls before the parent's timeout, so a CI hang has useful diagnostics.
+    faulthandler.dump_traceback_later(30, exit=True)
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     mode, schedule, checkpointed, directory = sys.argv[1:]
@@ -305,10 +310,20 @@ _MPI_SCRIPT = textwrap.dedent("""
         original_finalize = stores._ResultStore.finalize
         original_write = stores._ResultStore.write_channel
         original_commit = _Checkpoint.commit
-        if mode == "finalize_io":
+        if mode in ("finalize_io", "late_sender"):
             def fail(self, *args, **kwargs):
+                if mode == "late_sender":
+                    assert (directory / "sender_finished").exists(), "root finalized before transfers completed"
                 raise OSError("injected finalization failure")
             stores._ResultStore.finalize = fail
+        if mode == "late_sender":
+            original_send_rows = static._send_rows
+            def delayed_send(comm, tag, array):
+                original_send_rows(comm, tag, array)
+                if rank == 1:
+                    time.sleep(0.5)
+                    (directory / "sender_finished").touch()
+            static._send_rows = delayed_send
         if mode in ("transfer", "round_store"):
             def fail(self, *args, **kwargs):
                 raise OSError("injected storage failure")
@@ -333,7 +348,7 @@ _MPI_SCRIPT = textwrap.dedent("""
                 warnings.simplefilter("error", RuntimeWarning)
                 pu.parameterrun(fun, "x", range(20), on_error="nan", **options)
         except Exception as err:
-            if rank == 0 and mode in ("warning", "finalize_io"):
+            if rank == 0 and mode in ("warning", "finalize_io", "late_sender"):
                 assert isinstance(err, RuntimeWarning if mode == "warning" else OSError), repr(err)
             assert "injected" in str(err) or "points raised" in str(err) or mode == "allocation", str(err)
             caught = True
@@ -342,10 +357,13 @@ _MPI_SCRIPT = textwrap.dedent("""
         stores._ResultStore.finalize = original_finalize
         stores._ResultStore.write_channel = original_write
         _Checkpoint.commit = original_commit
+        if mode == "late_sender":
+            static._send_rows = original_send_rows
         # A failed private communicator must not contaminate a later sweep.
         result = pu.parameterrun(lambda x: x, "x", range(8), backend="mpi", pbar_bool=False, return_on="all")
         np.testing.assert_array_equal(result, np.arange(8))
     comm.Barrier()
+    faulthandler.cancel_dump_traceback_later()
     if rank == 0:
         print("ALL RANKS COMPLETED", flush=True)
 """)
@@ -365,6 +383,7 @@ _MPI_SCRIPT = textwrap.dedent("""
         ("round_store", "static", True, False),
         ("commit", "static", True, False),
         ("transfer", "static", False, True),
+        ("late_sender", "static", False, False),
         ("structured", "static", False, False),
         ("large", "static", False, False),
         ("large", "static", True, False),

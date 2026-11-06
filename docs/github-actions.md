@@ -7,7 +7,7 @@ The repository has three workflows. They form one pipeline, from a pull request 
 
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
-| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main` | Tests, lint and type check on 15 OS/Python combinations, plus MPI tests on Linux |
+| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main` | Tests, lint and type check on 15 OS/Python combinations, plus MPI tests on Linux, macOS and Windows |
 | Release | [release.yml](../.github/workflows/release.yml) | `push` to `main` (i.e. a merged PR) | Reads `__version__`, checks that the tag is new and that `CHANGELOG.md` has a matching entry, then creates the GitHub release and tag `vX.Y.Z` |
 | Publish | [publish.yml](../.github/workflows/publish.yml) | `workflow_run`: Release completed | If Release succeeded: builds the sdist and wheel, checks them, and uploads them to PyPI |
 
@@ -25,8 +25,8 @@ flowchart TD
         pr{{"pull_request event"}}
         matrix["job: test (15 runs, fail-fast off)<br/>os: ubuntu, macos, windows<br/>python: 3.11, 3.12, 3.13, 3.14, 3.15"]
         msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy"]
-        mpi["job: test-mpi-linux<br/>ubuntu, Python 3.12, OpenMPI"]
-        mpisteps["uv sync --extra mpi<br/>mpiexec -n 4 pytest -m mpi<br/>pytest -m mpi_subprocess (starts its own mpiexec)"]
+        mpi["job: test-mpi (7 runs, fail-fast off)<br/>Python 3.12<br/>ubuntu: Open MPI + MPICH + Intel MPI<br/>macos: Open MPI + MPICH<br/>windows: Microsoft MPI + Intel MPI"]
+        mpisteps["uv sync --extra mpi, verify native MPI runtime<br/>full MPI suite: 4 ranks<br/>scheduling and idle-worker tests: 8 ranks<br/>pytest -m mpi_subprocess (starts its own mpiexec)"]
         pr --> matrix --> msteps
         pr --> mpi --> mpisteps
     end
@@ -72,10 +72,28 @@ flowchart TD
 
 | Job | Runs on | Steps | Notes |
 | --- | --- | --- | --- |
-| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi-linux`. |
-| `test-mpi-linux` | ubuntu, Python 3.12 | `mpi4py/setup-mpi` (OpenMPI), `uv sync --extra mpi`, `mpiexec -n 4 … pytest -m mpi`, then `pytest -m mpi_subprocess` | The `mpi` tests need exactly 4 ranks. The `mpi_subprocess` tests start their own `mpiexec -n 4`, so they run outside `mpiexec`. |
+| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi`. |
+| `test-mpi` | Python 3.12; ubuntu with Open MPI/MPICH/Intel MPI, macos with Open MPI/MPICH, windows with Microsoft MPI/Intel MPI (7 runs) | `mpi4py/setup-mpi`, `uv sync --extra mpi`, verify the runtime vendor, full MPI suite with 4 ranks, `tests/test_mpi_rank_scaling.py` with 8 ranks, then `pytest -m mpi_subprocess` | `fail-fast: false`. Existing integration tests require 4 ranks; the scaling tests run at both 4 and 8 ranks. Subprocess tests launch their own four-rank jobs outside `mpiexec`. |
 
 Permissions are read-only (`contents: read`).
+
+The MPI job starts `uv` once before the launcher so all ranks use the same prepared Python environment. The runtime
+check fails immediately if the native MPI library cannot be loaded or its vendor differs from the selected matrix
+entry, preventing a preinstalled MPI library from silently replacing the intended runtime. Signal tests use
+platform-specific skips where needed: `SIGUSR1` coverage is skipped on Windows, while the existing
+`signal.raise_signal(SIGTERM)` checkpoint tests run on all three platforms.
+
+Four ranks select the automatic static schedule; eight ranks select the automatic dynamic schedule (one manager and
+seven compute workers). The scaling tests verify which ranks actually compute, completion with fewer points than
+ranks, root/all/file-only result delivery, checkpoint resume, and failed-point filling. Explicit static and dynamic
+schedules and guided versus single-point chunks are also exercised with idle ranks. MPI ranks each use one numerical
+library thread (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`); the Open MPI setup action enables
+oversubscription so the eight-rank checks can run on smaller hosted runners. These are correctness checks, not
+performance benchmarks.
+
+The static backend synchronizes the end of bulk transfers before finalizing the result store. Subprocess regression
+coverage includes a delayed sender and root finalization failures; a watchdog dumps blocked MPI stacks before the
+outer test timeout if a job hangs.
 
 ### Release ([release.yml](../.github/workflows/release.yml))
 

@@ -39,9 +39,31 @@ jobs:
       - name: Type check
         run: uv run mypy
 
-  test-mpi-linux:
-    name: mpi / ubuntu-latest / py3.12 / 4 ranks
-    runs-on: ubuntu-latest
+  test-mpi:
+    name: mpi / ${{ matrix.os }} / ${{ matrix.mpi }} / py3.12 / 4+8 ranks
+    runs-on: ${{ matrix.os }}
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mpi: openmpi
+          - os: ubuntu-latest
+            mpi: mpich
+          - os: ubuntu-latest
+            mpi: intelmpi
+          - os: macos-latest
+            mpi: openmpi
+          - os: macos-latest
+            mpi: mpich
+          - os: windows-latest
+            mpi: msmpi
+          - os: windows-latest
+            mpi: intelmpi
 
     steps:
       - uses: actions/checkout@v6
@@ -53,7 +75,7 @@ jobs:
       - name: Setup MPI
         uses: mpi4py/setup-mpi@v1
         with:
-          mpi: 'openmpi'
+          mpi: ${{ matrix.mpi }}
 
       - name: Install uv
         run: python -m pip install uv
@@ -61,8 +83,20 @@ jobs:
       - name: Sync environment with MPI extra
         run: uv sync --extra mpi
 
+      - name: Verify MPI runtime
+        env:
+          EXPECTED_MPI: ${{ matrix.mpi }}
+        run: >-
+          uv run python -c "import os; from mpi4py import MPI;
+          print(MPI.Get_library_version());
+          expected = {'openmpi': 'Open MPI', 'mpich': 'MPICH', 'intelmpi': 'Intel MPI', 'msmpi': 'Microsoft MPI'};
+          assert MPI.get_vendor()[0] == expected[os.environ['EXPECTED_MPI']], MPI.get_vendor()"
+
       - name: MPI tests (4 ranks)
-        run: mpiexec -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+        run: uv run mpiexec -n 4 python -m pytest -m mpi -o addopts="-q -m mpi"
+
+      - name: MPI scheduling and idle workers (8 ranks)
+        run: uv run mpiexec -n 8 python -m pytest tests/test_mpi_rank_scaling.py -m mpi -o addopts="-q -m mpi"
 
       # Not under mpiexec: these tests start their own `mpiexec -n 4` (e.g. on_error="raise" must abort the job)
       - name: MPI subprocess tests

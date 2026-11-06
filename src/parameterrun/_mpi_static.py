@@ -202,6 +202,9 @@ def _parameterrun_mpi(
         raise
 
     _log("Results gathered", verbose, hostname=hostname)
+    # A large blocking Send may still be completing on a worker after root's Recv returned.
+    # Finish the transfer phase on every rank before root finalizes and broadcasts any error.
+    comm.Barrier()
     try:
         return _finish_store(comm, store, param_names, param_values)
     finally:

@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
-        python-version: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
+        python-version: [ "3.11", "3.12", "3.13", "3.14", "3.15" ]
 
     steps:
       - uses: actions/checkout@v6
@@ -63,3 +63,7 @@ jobs:
 
       - name: MPI tests (4 ranks)
         run: mpiexec -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+
+      # Not under mpiexec: these tests start their own `mpiexec -n 4` (e.g. on_error="raise" must abort the job)
+      - name: MPI subprocess tests
+        run: uv run pytest -m mpi_subprocess -o addopts="-q -rs -m mpi_subprocess"

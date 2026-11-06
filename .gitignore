@@ -214,3 +214,13 @@ dev/profiles/*
 
 # Claude
 .claude/
+CLAUDE.md
+
+# Reports
+reports/
+
+# HPC benchmarks (local only)
+HPC_test/
+
+# Ferry ignore patterns
+.ferryignore

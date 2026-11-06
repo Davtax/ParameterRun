@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from parameterrun.parallel_utils import _format_input
+from parameterrun._inputs import _format_input
 
 
 def test_format_input_single_parameter() -> None:

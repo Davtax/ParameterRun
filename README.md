@@ -1,5 +1,26 @@
-# ParameterRun
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/svg/logo-readme-dark.svg">
+    <img src="logo/svg/logo-readme-light.svg" alt="ParameterRun" width="520">
+  </picture>
+</h1>
 
+<p align="center">
+  <a href="https://pypi.org/project/parameterrun/"><img src="https://img.shields.io/pypi/v/parameterrun" alt="PyPI"></a>
+  <a href="https://github.com/Davtax/ParameterRun/releases"><img src="https://img.shields.io/github/v/release/Davtax/ParameterRun" alt="GitHub release"></a>
+  <a href="https://pepy.tech/project/parameterrun"><img src="https://static.pepy.tech/badge/parameterrun/month" alt="Downloads"></a>
+  <a href="https://pypi.org/project/parameterrun/"><img src="https://img.shields.io/pypi/pyversions/parameterrun" alt="Python versions"></a>
+  <a href="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml"><img src="https://github.com/Davtax/ParameterRun/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://codecov.io/gh/Davtax/ParameterRun"><img src="https://codecov.io/gh/Davtax/ParameterRun/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://github.com/Davtax/ParameterRun/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/parameterrun" alt="License"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://mypy-lang.org/"><img src="https://www.mypy-lang.org/static/mypy_badge.svg" alt="Checked with mypy"></a>
+  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv"></a>
+</p>
+
+**Documentation:** <https://davtax.github.io/ParameterRun/>
+
+<!-- --8<-- [start:intro] -->
 `parameterrun` is a lightweight utility for running parameter sweeps in Python with a simple, function-based API.
 
 It is designed for scientific and numerical workflows where you want to evaluate a function over one or more parameter
@@ -14,7 +35,9 @@ The package supports:
 - MPI execution with `mpi4py`
 - automatic reshaping of outputs into arrays
 - functions returning either one output or multiple outputs
+<!-- --8<-- [end:intro] -->
 
+<!-- --8<-- [start:install] -->
 ## Installation
 
 ### With `pip`
@@ -29,6 +52,9 @@ pip install parameterrun
 pip install parameterrun[mpi]
 ```
 
+<!-- --8<-- [end:install] -->
+
+<!-- --8<-- [start:idea] -->
 ## Basic idea
 
 The main entry point is:
@@ -41,6 +67,9 @@ The function `parameterrun(...)` evaluates a user-defined function over a set of
 sweep are identified by their names exactly as they appear in the target function signature. Additional fixed arguments
 can be passed as keyword arguments.
 
+<!-- --8<-- [end:idea] -->
+
+<!-- --8<-- [start:quickstart] -->
 ## Quick start
 
 ### 1. Single parameter
@@ -96,6 +125,9 @@ print(result.shape)  # (2, 3)
 
 This grouped-input mode is useful when some parameters are logically linked and should not be combined independently.
 
+<!-- --8<-- [end:quickstart] -->
+
+<!-- --8<-- [start:outputs] -->
 ## Multiple outputs
 
 If the target function returns a tuple, parameterrun returns a list of arrays, one per output channel.
@@ -136,6 +168,9 @@ If `fun` returns `None` for some points (for example, a failed solver), a `Runti
 the parameters of the first one, because the result is then no longer a numeric array. Returning a NaN array of the
 right shape for failed points keeps the result numeric.
 
+<!-- --8<-- [end:outputs] -->
+
+<!-- --8<-- [start:errors] -->
 ## Errors in the function
 
 `on_error` controls what happens when `fun` raises an exception at some point:
@@ -155,6 +190,9 @@ result = parameterrun(my_function, param_names="x", param_values=[1, 2, 3], on_e
 
 Only `Exception` subclasses are caught: `KeyboardInterrupt` and `SystemExit` always propagate.
 
+<!-- --8<-- [end:errors] -->
+
+<!-- --8<-- [start:validation] -->
 ## Validation behavior
 
 `parameterrun` validates inputs before launching workers and raises clear `ValueError`s when:
@@ -164,6 +202,9 @@ Only `Exception` subclasses are caught: `KeyboardInterrupt` and `SystemExit` alw
 - extra keyword arguments do not match the target function signature
 - a keyword argument conflicts with a swept parameter name
 
+<!-- --8<-- [end:validation] -->
+
+<!-- --8<-- [start:backends] -->
 ## Parallel backend
 
 `parameterrun` supports two execution backends:
@@ -244,6 +285,9 @@ result = parameterrun(my_function, param_names="x", param_values=[1, 2, 3], back
 
 If rank 0 fails while finishing the result (for example with `reshape="strict"`), every rank raises instead of waiting.
 
+<!-- --8<-- [end:backends] -->
+
+<!-- --8<-- [start:saving] -->
 ## Saving the result to a file
 
 `result_file` writes the result, reshaped to the grid, to a `.npy` file on rank 0. With several outputs there is one
@@ -264,6 +308,9 @@ data = np.load("sweep.npy")  # Same as result
   `RuntimeWarning`. String outputs are written as a NumPy string array.
 - The directory is checked before anything is computed.
 
+<!-- --8<-- [end:saving] -->
+
+<!-- --8<-- [start:checkpoints] -->
 ## Checkpoints for long runs
 
 `checkpoint` saves the finished points of a long run to a directory, so that a run killed by a crash, a node failure or
@@ -307,6 +354,9 @@ result = parameterrun(my_function, param_names=["x", "y"], param_values=[xs, ys]
   the previous snapshot. Numeric outputs are stored as plain arrays, read without pickle. Only non-numeric outputs
   (strings, dicts, ragged arrays, ...) are pickled: load such snapshots only from sources you trust.
 
+<!-- --8<-- [end:checkpoints] -->
+
+<!-- --8<-- [start:progress] -->
 ## Progress bars and verbosity
 
 By default (`pbar_bool=None`), the progress bar is shown when the output is a terminal or a Jupyter notebook, and hidden
@@ -329,6 +379,9 @@ result = parameterrun(my_function, param_names="x", param_values=[1, 2, 3], verb
 The progress-bar description is generated automatically from the function name and parameter names, unless you provide
 `desc` explicitly.
 
+<!-- --8<-- [end:progress] -->
+
+<!-- --8<-- [start:api] -->
 ## API reference
 
 `parameterrun`
@@ -365,6 +418,9 @@ parameterrun(fun, param_names, param_values, n_workers=-1, pbar_bool=None, pbar_
 * `keep_checkpoint`: keep the snapshot after success (default `True`)
 * `**kwargs`: extra fixed keyword arguments forwarded to `fun`. They cannot reuse the names of the parameters above.
 
+<!-- --8<-- [end:api] -->
+
+<!-- --8<-- [start:inputs] -->
 ## Input formats
 
 `parameterrun` accepts three input styles.
@@ -393,6 +449,9 @@ param_names = [["x", "y"], ["z"]]
 param_values = [[[1, 2], [10, 20]], [[100, 200, 300]], ]
 ```
 
+<!-- --8<-- [end:inputs] -->
+
+<!-- --8<-- [start:devchecks] -->
 ## Development checks
 
 Before opening a PR or publishing a release, run:
@@ -412,3 +471,4 @@ uv sync --extra mpi
 mpirun -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
 ```
 
+<!-- --8<-- [end:devchecks] -->

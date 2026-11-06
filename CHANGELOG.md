@@ -6,6 +6,15 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-06
+
+### Changed
+
+- Documentation site: the home page shows the navigation sidebar, duplicate page titles are gone, and the header logo
+  and the browser-tab icon use a single-colour version of the mark (dark on light themes, light on dark themes).
+- CI runs only on pull requests into `main`, not again after the merge. The README CI and coverage badges follow the
+  pull-request runs.
+
 ## [0.5.1] - 2026-11-06
 
 ### Added

@@ -1,0 +1,28 @@
+/* Brand colours from the logo (logo/logos.af). */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1c1c1e;
+  --md-primary-fg-color--light: #3a3a3c;
+  --md-primary-fg-color--dark: #000000;
+  --md-accent-fg-color: #0a84ff;
+  --md-typeset-a-color: #0a84ff;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1c1c1e;
+  --md-primary-fg-color--light: #3a3a3c;
+  --md-primary-fg-color--dark: #000000;
+  --md-accent-fg-color: #409cff;
+  --md-typeset-a-color: #409cff;
+  --md-default-bg-color: #111113;
+}
+
+.md-header__button.md-logo img {
+  height: 1.6rem;
+}
+
+.pr-hero {
+  display: block;
+  max-width: 520px;
+  margin: 1rem auto 2rem;
+}

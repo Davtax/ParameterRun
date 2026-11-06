@@ -1,12 +1,11 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]
 build-backend = "hatchling.build"
 
 [project]
 name = "parameterrun"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 description = "Parallel parameter sweeps with joblib/MPI and tqdm progress bars."
-readme = "README.md"
 license = "BSD-3-Clause"
 authors = [
     { name = "David Fernández-Fernández", email = "david.fernandezf@hotmail.com" }
@@ -36,6 +35,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/Davtax/ParameterRun"
+Documentation = "https://davtax.github.io/ParameterRun/"
 Repository = "https://github.com/Davtax/ParameterRun"
 Issues = "https://github.com/Davtax/ParameterRun/issues"
 Changelog = "https://github.com/Davtax/ParameterRun/blob/main/CHANGELOG.md"
@@ -46,6 +46,11 @@ mpi = [
 ]
 
 [dependency-groups]
+docs = [
+    "zensical>=0.1",
+    "mkdocstrings[python]>=0.26",
+    "ruff>=0.11",
+]
 bench = [
     "ipykernel>=6.29",
     "matplotlib>=3.8",
@@ -58,7 +63,7 @@ dev = [
     "ruff>=0.11",
     "mypy>=1.10",
     "build>=1.2",
-    "twine>=6",
+    "twine>=7",
     "pydevd-pycharm>=261.23567.174",
     "psutil>=7.2.2",
     "scalene>=2.2.1",
@@ -70,6 +75,20 @@ pattern = '__version__ = "(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/parameterrun"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/logo"]
+
+# README uses relative image paths (work on GitHub and in local previews); PyPI needs absolute URLs.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(src|srcset)="logo/'
+replacement = '\1="https://raw.githubusercontent.com/Davtax/ParameterRun/main/logo/'
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

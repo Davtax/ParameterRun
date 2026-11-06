@@ -3,13 +3,15 @@
 > **Keep this in sync:** this page describes [.github/workflows/](../.github/workflows/). When a workflow changes
 > (triggers, jobs, matrix, steps, conditions), update the chart and the tables below in the same change.
 
-The repository has three workflows. They form one pipeline, from a pull request to a PyPI release:
+The repository has four workflows. CI, Release and Publish form one pipeline, from a pull request to a PyPI release;
+Docs publishes the documentation site in parallel:
 
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
-| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main` | Tests, lint and type check on 15 OS/Python combinations, plus MPI tests on Linux, macOS and Windows |
+| CI | [ci.yml](../.github/workflows/ci.yml) | `pull_request` into `main`, `push` to `main` | Tests, lint and type check on 15 OS/Python combinations (coverage uploaded to Codecov from one), plus MPI tests on Linux, macOS and Windows |
 | Release | [release.yml](../.github/workflows/release.yml) | `push` to `main` (i.e. a merged PR) | Reads `__version__`, checks that the tag is new and that `CHANGELOG.md` has a matching entry, then creates the GitHub release and tag `vX.Y.Z` |
 | Publish | [publish.yml](../.github/workflows/publish.yml) | `workflow_run`: Release completed | If Release succeeded: builds the sdist and wheel, checks them, and uploads them to PyPI |
+| Docs | [docs.yml](../.github/workflows/docs.yml) | `pull_request` into `main`, `push` to `main`, `workflow_dispatch` | Builds the site with Zensical (`zensical build --strict`); on pull requests only as a check, otherwise also deploys it to GitHub Pages |
 
 ## Pipeline chart
 
@@ -20,11 +22,12 @@ The repository has three workflows. They form one pipeline, from a pull request 
 ```mermaid
 flowchart TD
     work(["Work on dev / feature branches"]) -->|"open a PR into main"| pr
+    work -->|"open a PR into main"| dbuild
 
-    subgraph CI["ci.yml: on pull_request into main"]
-        pr{{"pull_request event"}}
+    subgraph CI["ci.yml: on pull_request into main or push to main"]
+        pr{{"pull_request or push event"}}
         matrix["job: test (15 runs, fail-fast off)<br/>os: ubuntu, macos, windows<br/>python: 3.11, 3.12, 3.13, 3.14, 3.15"]
-        msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy"]
+        msteps["checkout, setup-python, pip install uv, uv sync<br/>pytest -m 'not mpi and not mpi_subprocess' (coverage gate 70%)<br/>ruff check, mypy<br/>ubuntu + py3.12 only: upload coverage.xml to Codecov"]
         mpi["job: test-mpi (7 runs, fail-fast off)<br/>Python 3.12<br/>ubuntu: Open MPI + MPICH + Intel MPI<br/>macos: Open MPI + MPICH<br/>windows: Microsoft MPI + Intel MPI"]
         mpisteps["uv sync --extra mpi, verify native MPI runtime<br/>full MPI suite: 4 ranks<br/>scheduling and idle-worker tests: 8 ranks<br/>pytest -m mpi_subprocess (starts its own mpiexec)"]
         pr --> matrix --> msteps
@@ -64,6 +67,14 @@ flowchart TD
         okq -->|"yes"| build --> pypi
         okq -->|"no"| skip
     end
+
+    merge -->|"push to main"| dbuild
+
+    subgraph DOCS["docs.yml: on PR into main, push to main or manual run"]
+        dbuild["job: build<br/>Python 3.12, uv sync --only-group docs<br/>zensical build --strict<br/>not a PR: upload site/"]
+        deploy["job: deploy (skipped on PRs)<br/>actions/deploy-pages, environment 'github-pages'"]
+        dbuild -->|"push or manual run"| deploy
+    end
 ```
 
 ## Jobs in detail
@@ -72,7 +83,7 @@ flowchart TD
 
 | Job | Runs on | Steps | Notes |
 | --- | --- | --- | --- |
-| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess"`, `ruff check .`, `mypy` | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi`. |
+| `test` | ubuntu, macos, windows × Python 3.11–3.15 (15 runs) | `uv sync`, `pytest -m "not mpi and not mpi_subprocess" --cov-report=xml`, `ruff check .`, `mypy`; on ubuntu + Python 3.12 only, `codecov/codecov-action` uploads `coverage.xml` (secret `CODECOV_TOKEN`, `fail_ci_if_error: false`) | `fail-fast: false`, so one failing combination does not cancel the others. `addopts` in `pyproject.toml` adds the 70% coverage gate. Native MPI is only required in `test-mpi`. |
 | `test-mpi` | Python 3.12; ubuntu with Open MPI/MPICH/Intel MPI, macos with Open MPI/MPICH, windows with Microsoft MPI/Intel MPI (7 runs) | `mpi4py/setup-mpi`, `uv sync --extra mpi`, verify the runtime vendor, full MPI suite with 4 ranks, `tests/test_mpi_rank_scaling.py` with 8 ranks, then `pytest -m mpi_subprocess` | `fail-fast: false`. Existing integration tests require 4 ranks; the scaling tests run at both 4 and 8 ranks. Subprocess tests launch their own four-rank jobs outside `mpiexec`. |
 
 Permissions are read-only (`contents: read`).
@@ -114,9 +125,22 @@ Release ran on (`workflow_run.head_sha`), builds with `python -m build`, validat
 uploads with `pypa/gh-action-pypi-publish`. There is no API token in the workflow: it uses the `pypi` environment and
 an OIDC token (`id-token: write`), i.e. PyPI trusted publishing.
 
+### Docs ([docs.yml](../.github/workflows/docs.yml))
+
+Runs on pull requests into `main`, on every push to `main` and on manual dispatch. Concurrency is grouped per ref
+(`docs-<ref>`): a new commit on a PR cancels the PR's previous run, while deployments from `main` queue. The `build`
+job (`contents: read`) installs only the `docs` dependency group and builds the site with
+[Zensical](https://zensical.org), which reads `mkdocs.yml`, using `zensical build --strict` (a missing README snippet
+fails the run; unlike MkDocs, Zensical 0.1 does not report broken relative links). On pull requests that is the whole
+check. Otherwise it uploads `site/` with `actions/upload-pages-artifact`, and the `deploy` job (`pages: write`,
+`id-token: write`) publishes it with `actions/deploy-pages` in the `github-pages` environment. The site's pages pull their text from `README.md` and
+`CHANGELOG.md` through snippet markers, and the API reference from the `parameterrun` docstring.
+
 ## What this means in practice
 
-- **CI only runs on pull requests into `main`.** Pushes to `dev` or feature branches are not tested by GitHub Actions.
+- **CI runs on pull requests into `main` and again on the push to `main` after a merge**, in parallel with Release
+  (this run feeds the Codecov and CI badges for `main`). Pushes to `dev` or feature branches are not tested by GitHub
+  Actions.
 - **Every merge into `main` is a release.** If `__version__` was not bumped, Release fails at step 2 and nothing is
   published. If the `CHANGELOG.md` section is missing, it fails at step 3. Before merging: run
   `python scripts/bump_version.py …` and move the `[Unreleased]` entries under `## [X.Y.Z] - date`.

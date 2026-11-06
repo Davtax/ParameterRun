@@ -63,3 +63,7 @@ jobs:
 
       - name: MPI tests (4 ranks)
         run: mpiexec -n 4 uv run pytest -m mpi -o addopts="-q -m mpi"
+
+      # Not under mpiexec: these tests start their own `mpiexec -n 4` (e.g. on_error="raise" must abort the job)
+      - name: MPI subprocess tests
+        run: uv run pytest -m mpi_subprocess -o addopts="-q -rs -m mpi_subprocess"

@@ -1,4 +1,4 @@
-from parameterrun.parallel_utils import _normalized_time
+from parameterrun._utils import _normalized_time
 
 
 def test_normalized_time_seconds() -> None:

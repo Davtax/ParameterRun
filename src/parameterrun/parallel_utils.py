@@ -1,400 +1,39 @@
-import contextlib
-import inspect
+"""The public entry point, `parameterrun`: input handling, backend selection, execution and post-processing."""
+
+import os
 import sys
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from datetime import datetime
+import warnings
+from collections.abc import Callable, Iterable
 from itertools import product
-from math import prod
+from pathlib import Path
 from time import time
-from typing import Any, cast
+from typing import Any, Literal
 
-import joblib
 import numpy as np
-from joblib import Parallel, delayed
-from tqdm.auto import tqdm
 
-from ._pseudo_random import local_values
-
-
-def _normalized_time(time_seg: float) -> str:
-    """
-    Normalize the time to a human-readable format
-    """
-    if time_seg < 60:
-        return f"{time_seg:.2f} s"
-    elif time_seg < 3600:
-        mins, sec = divmod(time_seg, 60)
-        return f"{int(mins)} min {sec:.2f} s"
-    else:
-        hours, time_seg = divmod(time_seg, 3600)
-        mins, sec = divmod(time_seg, 60)
-        return f"{int(hours)} h {int(mins)} min {sec:.2f} s"
-
-
-def _callable_name(fun: Callable[..., Any]) -> str:
-    """
-    Name of a callable, falling back to its repr for objects without __name__ (e.g. functools.partial)
-    """
-    return getattr(fun, "__name__", repr(fun))
-
-
-def _log(message: str, verbose: bool | None = False, hostname: str | None = None) -> None:
-    if verbose:
-        # Compute timestamp
-        time_stamp = datetime.now().strftime("%H:%M:%S, %d/%m/%Y")
-        msg = f"{time_stamp}: {message}"
-        if hostname is not None:
-            msg = f"[{hostname}]: {msg}"
-
-        print(msg, flush=True)
-
-
-@contextlib.contextmanager
-def tqdm_joblib(tqdm_object: tqdm) -> Generator[tqdm, None, None]:
-    """Context manager to patch joblib to report into tqdm progress bar given as argument"""
-
-    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
-        def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            tqdm_object.update(n=self.batch_size)
-            return super().__call__(*args, **kwargs)
-
-    old_batch_callback = joblib.parallel.BatchCompletionCallBack
-    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback  # ty: ignore[invalid-assignment]
-    try:
-        yield tqdm_object
-    finally:
-        joblib.parallel.BatchCompletionCallBack = old_batch_callback
-        tqdm_object.close()
-
-
-def _parameterrun_joblib(
-    fun: Callable[..., Any],
-    param_names: list[list[str]],
-    param_values: list[list[list[Any]]],
-    indices_iterate: Iterable[tuple[int, ...]],
-    desc: str | None,
-    n_workers: int | None = -1,
-    pbar_bool: bool = True,
-    pbar_leave: bool | None = True,
-    **fun_kwargs: Any,
-) -> tuple[list[list[Any]], int]:
-    n_values = [len(group[0]) for group in param_values]
-    n_total = prod(n_values)  # Compute the total number of iterations
-
-    result: list[Any] = []
-    if n_workers == 1:  # If only one worker, do not use joblib
-        pbar = tqdm(indices_iterate, total=n_total, desc=desc, leave=pbar_leave, disable=not pbar_bool)
-        for index in pbar:
-            result.append(fun(**{**_get_iteration(index, param_names, param_values), **fun_kwargs}))
-    else:
-        with tqdm_joblib(tqdm(indices_iterate, total=n_total, desc=desc, leave=pbar_leave, disable=not pbar_bool)) as _:
-            result = Parallel(n_jobs=n_workers)(
-                delayed(fun)(**{**_get_iteration(index, param_names, param_values), **fun_kwargs})
-                for index in indices_iterate
-            )
-
-    n_output = len(result[0]) if isinstance(result[0], tuple) else 1
-    if n_output == 1:
-        result = [(result_i,) for result_i in result]
-
-    result_temp = []
-    for i in range(n_output):
-        result_temp.append([result[j][i] for j in range(n_total)])
-
-    return result_temp, n_output
-
-
-def _product_element_from_index(lists: list[list[int]], k: int) -> list[int]:
-    lengths = [len(L) for L in lists]
-
-    indices = [0] * len(lists)
-    for i in range(len(lists) - 1, -1, -1):
-        k, indices[i] = divmod(k, lengths[i])
-
-    return list(L[j] for L, j in zip(lists, indices, strict=True))
-
-
-def _parameterrun_mpi(
-    fun: Callable[..., Any],
-    param_names: list[list[str]],
-    param_values: list[list[list[Any]]],
-    desc: str | None,
-    pbar_bool: bool = True,
-    verbose: bool | None = False,
-    pbar_leave: bool | None = True,
-    seed: int | None = None,
-    fun_kwargs: dict[str, Any] | None = None,
-) -> tuple[list[list[Any]], int]:  # pragma: no cover
-    # fun_kwargs is an explicit dict (not **kwargs) so user kwargs such as `seed` cannot collide with our parameters
-    fun_kwargs = fun_kwargs or {}
-
-    from mpi4py import MPI
-
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-
-    n_values = [len(group[0]) for group in param_values]
-    indices = [list(range(n_value)) for n_value in n_values]
-    n_total = prod(n_values)  # Compute the total number of iterations
-
-    # Broadcast seed to all workers to ensure deterministic shuffling. Root's seed wins, a random one if not provided
-    if rank == 0 and seed is None:
-        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0])
-    seed = comm.bcast(seed, root=0)
-    assert isinstance(seed, int)  # For type checker
-    count = n_total // size + (1 if rank < (n_total % size) else 0)
-
-    # Use a generator to avoid storing all groups in memory and all indices
-    def groups_compute_generator() -> Iterator[tuple[int, list[int]]]:
-        for idx in local_values(n_total, size, rank, seed):
-            yield int(idx), _product_element_from_index(indices, int(idx))
-
-    groups_compute = groups_compute_generator()
-
-    pbar = tqdm(
-        groups_compute, desc=desc, leave=pbar_leave, disable=not (pbar_bool and rank == 0), file=sys.stdout, total=count
-    )
-
-    n_outputs = 0
-    result: list[Any] = []
-    result_indices: list[int] = []  # Track original indices for later sorting
-
-    if "Open MPI v5.0.6" in MPI.Get_library_version():
-        mpi_flush = True
-    else:
-        mpi_flush = False
-
-    for orig_idx, index in pbar:
-        if pbar_bool and rank == 0 and mpi_flush:
-            print("\r", flush=True)  # Needed to show the progress bar in some mpi versions
-            sys.stdout.write("\033[F")  # Move the cursor up one line
-
-        result_temp = fun(**{**_get_iteration(index, param_names, param_values), **fun_kwargs})
-
-        if not isinstance(result_temp, tuple):
-            result_temp = (result_temp,)
-
-        # Check how many parameters are returned
-        if len(result) == 0:  # First iteration
-            n_outputs = len(result_temp)
-            for _ in range(n_outputs):
-                result.append([])
-
-        for i, result_temp_i in enumerate(result_temp):
-            result[i].append(result_temp_i)
-
-        # Store the original index for this result
-        result_indices.append(orig_idx)
-
-    _log(f"Rank {rank} finished", verbose, hostname=MPI.Get_processor_name())
-
-    # Notify root when each worker is done, and show a progress bar
-    if rank == 0:
-        progress = 0
-        pbar = tqdm(
-            total=size - 1, desc="Waiting for workers", leave=pbar_leave, disable=not pbar_bool, file=sys.stdout
-        )
-
-        while progress < size - 1:
-            if comm.Iprobe(source=MPI.ANY_SOURCE, tag=0):
-                if pbar_bool and mpi_flush:
-                    print("\r", flush=True)  # Needed to show the progress bar in some mpi versions
-                    sys.stdout.write("\033[F")
-
-                comm.recv(source=MPI.ANY_SOURCE, tag=0)  # Receive a signal from each worker
-                progress += 1
-                pbar.update(1)
-
-        pbar.close()
-    else:
-        comm.send(True, dest=0, tag=0)  # Notify root that the work is done
-
-    n_outputs = comm.bcast(n_outputs, root=0)
-
-    if not result:  # For workers that did not compute anything
-        result = [[] for _ in range(n_outputs)]
-
-    # Gather indices from all workers, and compute the sorting order once for all outputs
-    indices_gathered = comm.gather(result_indices, root=0)
-    order: list[int] = []
-    if rank == 0:
-        assert indices_gathered is not None  # For type checker
-        indices_flat = [idx for sublist in indices_gathered for idx in sublist]
-        order = sorted(range(len(indices_flat)), key=indices_flat.__getitem__)
-
-    results_gathered = []
-    for i in range(n_outputs):
-        _log(f"Gathering results {i}", verbose and rank == 0, hostname=MPI.Get_processor_name())
-
-        result_gathered = comm.gather(result[i], root=0)
-
-        _log("Results gathered", verbose and rank == 0, hostname=MPI.Get_processor_name())
-
-        if rank == 0:
-            assert result_gathered is not None  # For type checker
-
-            # Flatten the results and sort them by original index
-            result_flat = [item for sublist in result_gathered for item in sublist]
-            results_gathered.append([result_flat[j] for j in order])
-
-        _log("Results reshaped", verbose and rank == 0, hostname=MPI.Get_processor_name())
-
-    return results_gathered, n_outputs
-
-
-def _get_iteration(
-    index: Sequence[int], param_names: list[list[str]], param_values: list[list[list[Any]]]
-) -> dict[str, Any]:
-    n_groups = len(param_values)
-    n_parameters = [len(group) for group in param_values]
-
-    dic_temp: dict[str, Any] = {}
-    for group_index in range(n_groups):
-        for parameter_index in range(n_parameters[group_index]):
-            dic_temp[param_names[group_index][parameter_index]] = param_values[group_index][parameter_index][
-                index[group_index]
-            ]
-
-    return dic_temp
-
-
-def _flatten_param_names(param_names: list[list[str]]) -> list[str]:
-    return [name for group in param_names for name in group]
-
-
-def _to_list_iterable(values: Any, error_message: str) -> list[Any]:
-    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
-        raise ValueError(error_message)
-    return list(values)
-
-
-def _validate_function_arguments(
-    fun: Callable[..., Any], param_names: list[list[str]], fun_kwargs: dict[str, Any]
-) -> None:
-    signature = inspect.signature(fun)
-    parameters = signature.parameters
-    accepts_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
-
-    sweep_names = _flatten_param_names(param_names)
-
-    duplicated = sorted({name for name in sweep_names if sweep_names.count(name) > 1})
-    if duplicated:
-        raise ValueError(f"Duplicate parameter names are not allowed: {duplicated}")
-
-    overlapping_kwargs = sorted(set(sweep_names).intersection(fun_kwargs))
-    if overlapping_kwargs:
-        raise ValueError(
-            f"Keyword arguments conflict with swept parameters: {overlapping_kwargs}. "
-            f"Remove them from kwargs or param_names."
-        )
-
-    if accepts_var_kwargs:
-        return
-
-    known_names = set(parameters)
-    unknown_sweep = sorted(name for name in sweep_names if name not in known_names)
-    if unknown_sweep:
-        raise ValueError(f"Unknown swept parameter names for function {_callable_name(fun)}: {unknown_sweep}")
-
-    unknown_kwargs = sorted(name for name in fun_kwargs if name not in known_names)
-    if unknown_kwargs:
-        raise ValueError(f"Unknown keyword arguments for function {_callable_name(fun)}: {unknown_kwargs}")
-
-
-def _format_input(
-    param_names: str | list[str] | list[list[str]], param_values: Any
-) -> tuple[list[list[str]], list[list[list[Any]]]]:
-    # Check the depth of the parameters
-
-    if isinstance(param_names, str):
-        if not param_names:
-            raise ValueError("Parameter names must be non-empty strings")
-        depth = 1
-    elif isinstance(param_names, list) and len(param_names) > 0 and all(isinstance(name, str) for name in param_names):
-        if any(not name for name in param_names):
-            raise ValueError("Parameter names must be non-empty strings")
-        depth = 2
-    elif (
-        isinstance(param_names, list) and len(param_names) > 0 and all(isinstance(group, list) for group in param_names)
-    ):
-        if any(len(group) == 0 for group in param_names):
-            raise ValueError("Parameter name groups must contain at least one parameter")
-        if any(any(not isinstance(name, str) or not name for name in group) for group in param_names):
-            raise ValueError("Parameter names must be non-empty strings")
-        depth = 3
-    else:
-        raise ValueError("Unknown input format for the parameters names")
-
-    normalized_param_names: list[list[str]]
-    normalized_param_values: list[list[list[Any]]]
-
-    # Correct the input if the depth is not equal to 3
-    if depth == 1:
-        # Only one parameter is provided
-        values = _to_list_iterable(param_values, "The parameters values must be an iterable of values")
-        normalized_param_names = [[cast(str, param_names)]]
-        normalized_param_values = [[values]]
-    elif depth == 2:
-        # Groups with a single parameters are provided
-        values = _to_list_iterable(param_values, "The parameters values must be an iterable of values")
-        normalized_param_names = [[param_name_i] for param_name_i in cast(list[str], param_names)]
-        normalized_param_values = [
-            [_to_list_iterable(param_values_i, "Each parameter values entry must be an iterable")]
-            for param_values_i in values
-        ]
-    else:
-        groups_values = _to_list_iterable(param_values, "The parameters values must be an iterable of values")
-        groups_values = [
-            _to_list_iterable(values_group, "Each parameter group values must be provided as an iterable")
-            for values_group in groups_values
-        ]
-        normalized_param_names = cast(list[list[str]], param_names)
-        normalized_param_values = [
-            [
-                _to_list_iterable(parameter_values, "Each parameter values entry must be an iterable")
-                for parameter_values in values_group
-            ]
-            for values_group in groups_values
-        ]
-
-    # Check that the number of groups of parameters is the same as the number of groups of values
-    if len(normalized_param_names) != len(normalized_param_values):
-        raise ValueError("The number of groups of parameters must be the same as the number of groups of values")
-
-    for names_group, values_group in zip(normalized_param_names, normalized_param_values, strict=True):
-        if len(names_group) != len(values_group):
-            raise ValueError("Each parameter group must include one values list per parameter")
-
-    # Check that all parameters in the same group have the same length
-    for group in normalized_param_values:
-        if len(set([len(param) for param in group])) != 1:
-            raise ValueError("All parameters in the same group must have the same length")
-
-    all_names = _flatten_param_names(normalized_param_names)
-    duplicated = sorted({name for name in all_names if all_names.count(name) > 1})
-    if duplicated:
-        raise ValueError(f"Duplicate parameter names are not allowed: {duplicated}")
-
-    return normalized_param_names, normalized_param_values
-
-
-def _reshape_channel_result(channel_values: list[Any], n_values: list[int]) -> np.ndarray:
-    array_result = np.array(channel_values)
-    if array_result.ndim == 0:
-        raise ValueError("Could not reshape scalar output")
-
-    target_shape = tuple(n_values) + tuple(array_result.shape[1:])
-    reshaped: np.ndarray = array_result.reshape(target_shape)
-    return reshaped
-
-
-def _convert_result_to_lists(result: Any) -> Any:
-    if isinstance(result, np.ndarray):
-        return result.tolist()
-    if isinstance(result, list):
-        return [_convert_result_to_lists(item) for item in result]
-    return result
+from ._delivery import _RETURN_ON, _broadcast_result, _check_result_file, _write_result_files
+from ._errors import _ON_ERROR_MODES, _fill_failed_points
+from ._inputs import _format_input, _validate_function_arguments
+from ._joblib_backend import _parameterrun_joblib
+from ._mpi_dynamic import _parameterrun_mpi_dynamic
+from ._mpi_static import _parameterrun_mpi
+from ._progress import _resolve_pbar_bool
+from ._results import _as_flat_lists, _convert_result_to_lists, _reshape_channel_result, _warn_none_outputs
+from ._utils import _callable_name, _log, _mpi_world_size_from_env, _normalized_time
+
+_MPI_SCHEDULES = ("auto", "static", "dynamic")
+
+# mpi_schedule="auto" picks the dynamic schedule from this many ranks on. Below it, giving up one rank to the manager
+# costs more than the load balancing gains (and static is what CI's 4-rank runs exercise by default)
+_DYNAMIC_MIN_RANKS = 8
+
+
+def _resolve_mpi_schedule(mpi_schedule: str, size: int) -> str:
+    if size < 2:  # The dynamic schedule needs a manager and at least one worker
+        return "static"
+    if mpi_schedule == "auto":
+        return "dynamic" if size >= _DYNAMIC_MIN_RANKS else "static"
+    return mpi_schedule
 
 
 def parameterrun(
@@ -402,13 +41,19 @@ def parameterrun(
     param_names: str | list[str] | list[list[str]],
     param_values: Iterable[Any] | Iterable[Iterable[Any]] | Iterable[Iterable[Iterable[Any]]],
     n_workers: int | None = -1,
-    pbar_bool: bool = True,
+    pbar_bool: bool | None = None,
     pbar_leave: bool = True,
     verbose: bool | None = False,
-    reshape: bool = True,
+    reshape: bool | Literal["strict"] = True,
     result_as_array: bool = True,
     backend: str | None = None,
     desc: str | None = None,
+    shuffle_seed: int | None = None,
+    on_error: Literal["raise", "nan"] = "raise",
+    mpi_schedule: Literal["auto", "static", "dynamic"] = "auto",
+    mpi_chunk_size: int | None = None,
+    return_on: Literal["root", "all", "none"] = "root",
+    result_file: str | os.PathLike[str] | None = None,
     **fun_kwargs: Any,
 ) -> list[Any] | np.ndarray | None:
     """
@@ -441,24 +86,68 @@ def parameterrun(
         accepted as long as they follow one of the supported input shapes.
     n_workers : int, optional (default=-1)
         Number of workers to use in parallel. If -1, the number of workers is the maximum number of cores available.
-    pbar_bool : bool, optional (default=True)
-        If True, show a progress bar.
+    pbar_bool : bool, optional (default=None)
+        If True, show a progress bar; if False, hide it. If None, honour the TQDM_DISABLE environment variable, and
+        otherwise show the bar only when the output is a terminal or a notebook. When the output is not a terminal
+        (e.g. a Slurm log), the bar prints one plain line per refresh, every 30 s by default (TQDM_MININTERVAL
+        overrides it).
     pbar_leave : bool, optional (default=True)
         If True, leave the progress bar after completion.
     backend : str, optional (default=None)
         Backend to use for the parallelization. If None, the backend is chosen automatically between joblib and mpi.
     verbose : bool, optional (default=False)
         If True, print information about the parallelization.
-    reshape : bool, optional (default=True)
-        If True, reshape the result as a (hyper)matrix. Sometimes, due to the nature of the output, the reshape is not
-        possible, in this case, the result is not reshaped.
+    reshape : bool or "strict", optional (default=True)
+        If True, reshape the result as a (hyper)matrix. If that is not possible (e.g. outputs of different shapes), a
+        RuntimeWarning explains why and the flat list(s) of results are returned instead. With "strict", a ValueError
+        is raised instead. If False, the flat list(s) are returned.
     result_as_array : bool, optional (default=True)
         If True, return numpy arrays when possible (default behavior). If False, convert numpy-array outputs to Python
         lists.
     desc: str, optional (default=None)
         Description of the progress bar. If None, the description denotes the function and parameters names.
+    shuffle_seed: int, optional (default=None)
+        MPI backend only: seed of the permutation that distributes the points among ranks. Pass it to make the
+        assignment reproducible; if None, a random seed is drawn on rank 0. Ignored by the joblib backend.
+    on_error: "raise" or "nan", optional (default="raise")
+        What to do when `fun` raises an exception at some point.
+        - "raise": the exception propagates with the parameter values of the failing point added as a note (its type is
+          kept). Under MPI with more than one rank, the failing rank prints the traceback once and aborts the whole MPI
+          job (`comm.Abort(1)`), so the other ranks don't wait until the walltime limit.
+        - "nan": the point is filled with NaN of the right shape per output channel (integer and boolean outputs become
+          floating point, non-numeric outputs get None), and a RuntimeWarning reports the number of failed points and
+          the traceback of the first one. If every point fails, a RuntimeError is raised.
+        Only `Exception` subclasses are caught; e.g. KeyboardInterrupt always propagates.
+    mpi_schedule: "auto", "static" or "dynamic", optional (default="auto")
+        MPI backend only: how the points are distributed among ranks.
+        - "static": every rank computes a fixed share of the points (a seeded pseudo-random permutation), and the
+          results are gathered at the end. All ranks compute.
+        - "dynamic": rank 0 is a manager that hands out chunks of points on demand, and the other ranks compute. Fast
+          ranks get more work, so the job no longer waits for the slowest rank; results go straight into
+          preallocated arrays on rank 0. Costs one rank, and needs at least 2 (with 1 rank, "static" runs).
+        - "auto": "dynamic" with 8 ranks or more, "static" otherwise.
+    mpi_chunk_size: int, optional (default=None)
+        Dynamic MPI schedule only: number of points per chunk. If None, chunks are guided: a quarter of each worker's
+        share of the remaining points, so they shrink to one point at the end. Set it for very cheap points, to cut
+        the number of messages.
+    return_on: "root", "all" or "none", optional (default="root")
+        Which MPI ranks get the result. "root": rank 0 only, the other ranks get None. "all": every rank gets the same
+        result; numeric arrays are broadcast as raw bytes (no pickling), which is much cheaper than a `comm.bcast` of
+        the result afterwards. "none": every rank gets None; requires `result_file`. Under joblib, "all" is the same
+        as "root".
+    result_file: str or path, optional (default=None)
+        Write the result to this `.npy` file (on rank 0), reshaped to the grid: one file per output channel, so
+        `result.npy` becomes `result_0.npy`, `result_1.npy`, ... for several outputs. Existing files are overwritten.
+        Under MPI, numeric outputs are written to the file while the points arrive (a memory-mapped array), so the
+        size of the result is limited by the disk, not by rank 0's memory; the returned arrays then read from the file
+        (copy-on-write: changing them never changes the file). Under joblib, the files are written at the end. Outputs
+        that cannot form one array without Python objects (e.g. ragged arrays, None) are not written, with a
+        RuntimeWarning.
     fun_kwargs :
-        Additional parameters to pass to the function.
+        Additional parameters to pass to the function. They cannot use the names of the parameters of
+        `parameterrun` itself (`fun`, `param_names`, `param_values`, `n_workers`, `pbar_bool`, `pbar_leave`,
+        `verbose`, `reshape`, `result_as_array`, `backend`, `desc`, `shuffle_seed`, `on_error`, `mpi_schedule`,
+        `mpi_chunk_size`, `return_on`, `result_file`). Any other name, including `seed`, is passed to the function.
 
     Returns
     -------
@@ -468,6 +157,23 @@ def parameterrun(
     """
 
     time_start = time()
+
+    if reshape not in (True, False, "strict"):
+        raise ValueError(f'reshape must be True, False or "strict", got {reshape!r}')
+    if on_error not in _ON_ERROR_MODES:
+        raise ValueError(f'on_error must be "raise" or "nan", got {on_error!r}')
+    if mpi_schedule not in _MPI_SCHEDULES:
+        raise ValueError(f'mpi_schedule must be "auto", "static" or "dynamic", got {mpi_schedule!r}')
+    if mpi_chunk_size is not None and (
+        isinstance(mpi_chunk_size, bool) or not isinstance(mpi_chunk_size, int) or mpi_chunk_size < 1
+    ):
+        raise ValueError(f"mpi_chunk_size must be a positive integer or None, got {mpi_chunk_size!r}")
+    if return_on not in _RETURN_ON:
+        raise ValueError(f'return_on must be "root", "all" or "none", got {return_on!r}')
+    if return_on == "none" and result_file is None:
+        raise ValueError('return_on="none" needs a result_file, otherwise the result would be lost')
+    if result_file is not None and not Path(result_file).suffix == ".npy":
+        raise ValueError(f"result_file must end in .npy, got {str(result_file)!r}")
 
     formatted_param_names, formatted_param_values = _format_input(param_names, param_values)
     _validate_function_arguments(fun, formatted_param_names, fun_kwargs)
@@ -504,6 +210,28 @@ def parameterrun(
         else:
             backend = "mpi"
 
+    if backend == "joblib" and n_workers is not None and n_workers < 0:
+        mpi_size = _mpi_world_size_from_env()
+        if mpi_size > 1:
+            warnings.warn(
+                f'backend="joblib" with n_workers={n_workers} inside an MPI job of {mpi_size} ranks: every rank starts '
+                f"a pool with one worker per core, which oversubscribes the node. Use the MPI backend, or pass "
+                f"n_workers explicitly (e.g. int(os.environ['SLURM_CPUS_PER_TASK'])) if you run one rank per node.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    # Check the result file before computing anything. Under MPI only rank 0 writes it, and every rank must agree
+    if result_file is not None:
+        problem = _check_result_file(result_file) if rank == 0 else None
+        if backend == "mpi" and size > 1:
+            problem = comm.bcast(problem, root=0)
+        if problem is not None:
+            raise ValueError(problem)
+
+    # tqdm writes to stderr under joblib, and the MPI backend writes to stdout
+    pbar_bool = _resolve_pbar_bool(pbar_bool, sys.stdout if backend == "mpi" else sys.stderr)
+
     if desc is None:
         param_names_pbar = [parameters_names_i for parameters_names_i in formatted_param_names]
         auto_desc = f"{_callable_name(fun)}: {param_names_pbar}"
@@ -514,7 +242,7 @@ def parameterrun(
         desc = auto_desc
 
     # Execute the parallel run
-    result: list[list[Any]]
+    result: list[Any]  # One flat list or array per output channel
 
     if backend == "joblib":
         _log("Running under joblib", verbose)
@@ -530,17 +258,21 @@ def parameterrun(
             n_workers=n_workers,
             pbar_bool=pbar_bool,
             pbar_leave=pbar_leave,
+            on_error=on_error,
             **fun_kwargs,
         )
 
     elif backend == "mpi":
+        schedule = _resolve_mpi_schedule(mpi_schedule, size)
         _log(
-            f"Running under mpi with {size} workers",
+            f"Running under mpi with {size} ranks, {schedule} schedule",
             verbose and rank == 0,
             hostname=mpi_module.Get_processor_name() if mpi_module is not None else None,
         )
 
-        result, n_outputs = _parameterrun_mpi(
+        mpi_backend = _parameterrun_mpi_dynamic if schedule == "dynamic" else _parameterrun_mpi
+        extra: dict[str, Any] = {"chunk_size": mpi_chunk_size} if schedule == "dynamic" else {}
+        result, n_outputs = mpi_backend(
             fun,
             formatted_param_names,
             formatted_param_values,
@@ -548,31 +280,69 @@ def parameterrun(
             pbar_bool=pbar_bool,
             pbar_leave=pbar_leave,
             verbose=verbose,
+            seed=shuffle_seed,
             fun_kwargs=fun_kwargs,
+            on_error=on_error,
+            result_file=result_file,
+            **extra,
         )
 
     else:
         raise ValueError("Unknown backend")
 
+    final_result: list[Any] | np.ndarray | None = None
+    root_error: BaseException | None = None
     if rank == 0:
-        final_result: list[list[Any]] | np.ndarray | list[np.ndarray] = result
+        try:
+            final_result = _finish_on_root(
+                result, n_outputs, n_values, formatted_param_names, formatted_param_values, reshape, result_file
+            )
+        except Exception as err:
+            if not (return_on == "all" and size > 1):
+                raise
+            root_error = err  # Re-raised by _broadcast_result, after telling the other ranks
 
-        # Reshape the result to get the (hyper)matrix
-        if reshape:
-            try:
-                if n_outputs == 1:
-                    final_result = _reshape_channel_result(result[0], n_values)
-                else:
-                    final_result = [_reshape_channel_result(result[i], n_values) for i in range(n_outputs)]
-            except ValueError:
-                print("Could not reshape the result")
+        _log(f"Total time: {_normalized_time(time() - time_start)}", verbose)
 
-        total_time = time() - time_start
-        _log(f"Total time: {_normalized_time(total_time)}", verbose)
-
-        if not result_as_array:
-            final_result = _convert_result_to_lists(final_result)
-
-        return final_result
-    else:
+    if return_on == "all" and size > 1:
+        final_result = _broadcast_result(comm, final_result, root_error)
+    elif rank != 0 or return_on == "none":
         return None
+    if not result_as_array:
+        final_result = _convert_result_to_lists(final_result)
+    return final_result
+
+
+def _finish_on_root(
+    result: list[Any],
+    n_outputs: int,
+    n_values: list[int],
+    param_names: list[list[str]],
+    param_values: list[list[list[Any]]],
+    reshape: bool | Literal["strict"],
+    result_file: str | os.PathLike[str] | None,
+) -> list[Any] | np.ndarray:
+    """Post-processing on rank 0: NaN filling, checks, result files and reshaping (warnings point at the caller)."""
+    _fill_failed_points(result, param_names, param_values)
+    _warn_none_outputs(result, param_names, param_values)
+
+    if result_file is not None:
+        _write_result_files(result, n_values, result_file)
+
+    # Reshape the result to get the (hyper)matrix
+    if reshape:
+        channel = 0
+        try:
+            reshaped = []
+            for channel in range(n_outputs):
+                reshaped.append(_reshape_channel_result(result[channel], n_values))
+            return reshaped[0] if n_outputs == 1 else reshaped
+        except ValueError as err:
+            message = f"Could not reshape output channel {channel} to the grid shape {tuple(n_values)}: {err}"
+            if reshape == "strict":
+                raise ValueError(message) from err
+            warnings.warn(
+                f"{message}. Returning the flat list(s) of results instead of arrays.", RuntimeWarning, stacklevel=3
+            )
+
+    return _as_flat_lists(result)  # Not reshaped: one flat list per channel, whatever the backend

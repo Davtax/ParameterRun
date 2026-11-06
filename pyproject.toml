@@ -46,6 +46,11 @@ mpi = [
 ]
 
 [dependency-groups]
+bench = [
+    "ipykernel>=6.29",
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+]
 dev = [
     "parameterrun[mpi]",
     "pytest>=8,<9",
@@ -71,6 +76,7 @@ testpaths = ["tests"]
 addopts = "-q --cov=parameterrun --cov-report=term-missing --cov-fail-under=70"
 markers = [
     "mpi: tests that require mpi4py and an MPI launcher",
+    "mpi_subprocess: tests that start their own mpiexec (skipped without one; never run them under mpiexec)",
 ]
 
 [tool.ruff]

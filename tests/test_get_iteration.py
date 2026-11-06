@@ -1,4 +1,4 @@
-from parameterrun.parallel_utils import _get_iteration
+from parameterrun._inputs import _get_iteration
 
 
 def test_get_iteration_grouped() -> None:

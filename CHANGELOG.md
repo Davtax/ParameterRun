@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
+## [Unreleased]
+
+## [0.5.1] - 2026-11-06
+
+### Added
+
+- Project logo: light/dark wordmark at the top of the README, plus icons, favicons and a GitHub social preview in
+  `logo/` (source file `logo/logos.af`). The `logo/` folder is excluded from the sdist.
+- Documentation site at <https://davtax.github.io/ParameterRun/> (built with Zensical, checked on pull requests and deployed to GitHub Pages on every
+  push to `main`): user guide built from the README, API reference from the docstring, and changelog.
+
 ## [0.5.0] - 2026-11-06
 
 ### Added

@@ -10,7 +10,7 @@ copyright: Copyright &copy; David Fernández-Fernández · BSD-3-Clause
 theme:
   name: material
   logo: assets/icon-app-tile.svg
-  favicon: assets/favicon.ico
+  favicon: assets/favicon.svg
   icon:
     repo: fontawesome/brands/github
   font:

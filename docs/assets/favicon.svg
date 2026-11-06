@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .tile { fill: #1c1c1e; } .track { fill: #3a3a3c; } .spine { fill: #f5f5f7; } .b1 { fill: #409cff; } .b2 { fill: #5ee0c8; } .b3 { fill: #ffc94d; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #f5f5f7; } .track { fill: #d8d8dd; } .spine { fill: #1c1c1e; } .b1 { fill: #0a84ff; } .b2 { fill: #0d9488; } .b3 { fill: #f59e0b; }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="7.5"/>
+  <rect class="track" x="7" y="6" width="19" height="5.5" rx="2.75"/>
+  <rect class="track" x="7" y="13.25" width="19" height="5.5" rx="2.75"/>
+  <rect class="track" x="7" y="20.5" width="19" height="5.5" rx="2.75"/>
+  <rect class="b1" x="7" y="6" width="19" height="5.5" rx="2.75"/>
+  <rect class="b2" x="7" y="13.25" width="14" height="5.5" rx="2.75"/>
+  <rect class="b3" x="7" y="20.5" width="9.5" height="5.5" rx="2.75"/>
+  <rect class="spine" x="5.5" y="6" width="5.5" height="20" rx="2.75"/>
+</svg>
